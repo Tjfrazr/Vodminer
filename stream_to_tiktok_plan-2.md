@@ -1,14 +1,14 @@
 # Stream-to-TikTok Pipeline — Master Plan
 **Project:** Automated Twitch → TikTok Highlight System
-**Streamer:** TJ (Ti-Jean Fraser) | Frazr Studios
-**Date:** May 2026
+**Streamer/Lead Developer:** TJ (Ti-Jean Fraser)
+**Project Start Date:** May 24 2026
 **Constraint:** 100% free — no paid subscriptions or tools
 
 ---
 
 ## Overview
 
-Automatically detect highlights from Twitch streams, clip them, and post to TikTok — with Discord approve/reject control (Honeybee-style).
+Read twitch streams and automatically create highlights, clip the highlights and post them to my tictok from Twitch streams, clip them, and post to TikTok — with Discord approve/reject control.
 
 **Goal:** Volume with quality filter — post frequently, but only approved clips go live.
 **Review method:** Discord bot notifications with Approve/Reject buttons.
@@ -178,12 +178,12 @@ stream-to-tiktok/
 ## Environment Variables Needed
 
 ```
-TWITCH_CLIENT_ID=
+TWITCH_CLIENT_ID= 
 TWITCH_CLIENT_SECRET=
 TWITCH_BROADCASTER_ID=
 TWITCH_WEBHOOK_SECRET=
 DISCORD_BOT_TOKEN=
-DISCORD_CHANNEL_ID=6590249760
+DISCORD_CHANNEL_ID=
 TIKTOK_CLIENT_KEY=
 TIKTOK_CLIENT_SECRET=
 TIKTOK_ACCESS_TOKEN=
