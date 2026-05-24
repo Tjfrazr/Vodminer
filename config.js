@@ -12,8 +12,10 @@ export const detector = {
   windowSec: 2,
   spikeStddevs: 2.0,
   groupGapWindows: 4,
-  clipLengthSec: 30,
+  minClipLengthSec: 45,
+  maxClipLengthSec: 60,
   preRollSec: 10,
+  postRollSec: 5,
   maxHighlightsPerVod: 15,
 };
 

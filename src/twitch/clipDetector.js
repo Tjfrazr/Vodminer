@@ -146,15 +146,16 @@ function buildHighlight(group, vod, stats) {
   const spikeEndSec = (group.endIdx + 1) * cfg.windowSec;
   const spikeMidSec = (spikeStartSec + spikeEndSec) / 2;
 
+  const naturalLen = (spikeEndSec - spikeStartSec) + cfg.preRollSec + cfg.postRollSec;
+  const cappedMax = Math.min(cfg.maxClipLengthSec, videoCfg.maxDurationSec);
+  const clipLen = Math.max(cfg.minClipLengthSec, Math.min(cappedMax, naturalLen));
+
   let startSec = Math.max(0, spikeStartSec - cfg.preRollSec);
-  let endSec = startSec + cfg.clipLengthSec;
+  let endSec = startSec + clipLen;
 
   if (vod.durationSec && endSec > vod.durationSec) {
     endSec = vod.durationSec;
-    startSec = Math.max(0, endSec - cfg.clipLengthSec);
-  }
-  if (endSec - startSec > videoCfg.maxDurationSec) {
-    endSec = startSec + videoCfg.maxDurationSec;
+    startSec = Math.max(0, endSec - clipLen);
   }
 
   const score = stats.stddev > 0

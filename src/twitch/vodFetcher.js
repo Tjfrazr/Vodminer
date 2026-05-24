@@ -69,6 +69,15 @@ function parseDurationToSec(duration) {
   return h * 3600 + min * 60 + s;
 }
 
+function shapeVod(vid) {
+  return {
+    vodId: vid.id,
+    url: vid.url,
+    durationSec: parseDurationToSec(vid.duration),
+    createdAt: vid.created_at,
+  };
+}
+
 export async function getLatestVod(broadcasterId) {
   const data = await helixGet('/videos', {
     user_id: broadcasterId,
@@ -76,13 +85,27 @@ export async function getLatestVod(broadcasterId) {
     first: 1,
   });
   const vid = data?.data?.[0];
-  if (!vid) return null;
-  return {
-    vodId: vid.id,
-    url: vid.url,
-    durationSec: parseDurationToSec(vid.duration),
-    createdAt: vid.created_at,
-  };
+  return vid ? shapeVod(vid) : null;
+}
+
+export async function getAllVods(broadcasterId, { onPage } = {}) {
+  const all = [];
+  let cursor;
+  let page = 0;
+  do {
+    const data = await helixGet('/videos', {
+      user_id: broadcasterId,
+      type: 'archive',
+      first: 100,
+      after: cursor,
+    });
+    const batch = (data?.data ?? []).map(shapeVod);
+    all.push(...batch);
+    page += 1;
+    if (typeof onPage === 'function') onPage({ page, batchSize: batch.length, total: all.length });
+    cursor = data?.pagination?.cursor;
+  } while (cursor);
+  return all;
 }
 
 export async function downloadVodSegment(vodId, startSec, endSec, outPath) {
@@ -142,4 +165,4 @@ export async function downloadVodSegment(vodId, startSec, endSec, outPath) {
   });
 }
 
-export default { getAppAccessToken, getLatestVod, downloadVodSegment };
+export default { getAppAccessToken, getLatestVod, getAllVods, downloadVodSegment };

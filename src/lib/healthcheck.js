@@ -6,9 +6,8 @@ const MIN_NODE_MAJOR = 20;
 
 function checkBinary(name) {
   try {
-    const result = spawnSync(name, ['-version'], { stdio: 'ignore' });
-    if (result.error) return false;
-    return result.status === 0;
+    const result = spawnSync(name, ['--version'], { stdio: 'ignore' });
+    return !(result.error && result.error.code === 'ENOENT');
   } catch {
     return false;
   }
