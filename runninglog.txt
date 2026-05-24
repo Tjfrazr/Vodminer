@@ -1,0 +1,7 @@
+Vodminer — running log
+Format: [YYYY-MM-DD HH:MM] <commit-id> — <summary>
+Append latest entries at the bottom.
+
+[2026-05-24 12:02] 8097569 — Initial commit: add project plan and CLAUDE.md.
+[2026-05-24 12:04] e7ab56d — Update plan doc: revise overview and move credentials to git secrets.
+[2026-05-24 12:30] — Merged universal rules into CLAUDE.md. Created MEMORY.md, ERRORS.md, runninglog.txt, .claude/commands/deferred.txt. Deleted Uni-CLAUDE.md.
