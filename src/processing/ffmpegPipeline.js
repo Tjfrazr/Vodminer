@@ -123,7 +123,13 @@ export default async function process(highlight, sourceVideoPath, captions) {
       .videoCodec(video.codec)
       .audioCodec('aac')
       .videoFilters(videoFilter)
-      .outputOptions(['-preset veryfast', '-crf 23', '-movflags +faststart'])
+      .outputOptions([
+        '-preset medium',
+        '-crf 26',
+        '-maxrate 2800k',
+        '-bufsize 5600k',
+        '-movflags +faststart',
+      ])
       .format(video.container)
       .on('start', (cmd) => logger.debug({ cmd }, 'ffmpeg: command'))
       .on('stderr', (line) => logger.trace({ line }, 'ffmpeg: stderr'))
