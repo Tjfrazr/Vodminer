@@ -1,43 +1,13 @@
 import express from 'express';
-import path from 'node:path';
-import { tmpdir } from 'node:os';
 import { env } from './src/lib/env.js';
 import { logger } from './src/lib/logger.js';
 import { assertHostReady } from './src/lib/healthcheck.js';
 import { installGlobalHandlers } from './src/lib/alerts.js';
 import { createEventSubRouter } from './src/twitch/eventSub.js';
-import { getLatestVod, downloadVodSegment } from './src/twitch/vodFetcher.js';
-import detectClips from './src/twitch/clipDetector.js';
-import processVideo from './src/processing/ffmpegPipeline.js';
 import reviewBot from './src/discord/reviewBot.js';
+import { runPipeline } from './src/pipeline.js';
 
 const app = express();
-
-async function runPipeline(eventPayload) {
-  const broadcasterId = eventPayload?.broadcasterId || env.TWITCH_BROADCASTER_ID;
-  logger.info({ broadcasterId }, 'pipeline.start');
-
-  const vod = await getLatestVod(broadcasterId);
-  if (!vod) {
-    logger.warn({ broadcasterId }, 'pipeline.noVod');
-    return;
-  }
-
-  const highlights = (await detectClips(vod)) ?? [];
-  logger.info({ count: highlights.length, vodId: vod.vodId }, 'pipeline.highlights');
-
-  for (const h of highlights) {
-    try {
-      const sourcePath = path.join(tmpdir(), `vodminer-${vod.vodId}-${h.startSec}-${h.endSec}.mp4`);
-      await downloadVodSegment(vod.vodId, h.startSec, h.endSec, sourcePath);
-      const clip = await processVideo(h, sourcePath);
-      if (!clip) continue;
-      await reviewBot.sendPreview(clip);
-    } catch (err) {
-      logger.warn({ err: err?.message, vodId: vod.vodId }, 'pipeline.clipError');
-    }
-  }
-}
 
 const { router: eventSubRouter, emitter: twitchEvents } = createEventSubRouter();
 twitchEvents.on('stream.offline', (payload) => {
