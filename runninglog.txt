@@ -5,3 +5,4 @@ Append latest entries at the bottom.
 [2026-05-24 12:02] 8097569 — Initial commit: add project plan and CLAUDE.md.
 [2026-05-24 12:04] e7ab56d — Update plan doc: revise overview and move credentials to git secrets.
 [2026-05-24 12:30] — Merged universal rules into CLAUDE.md. Created MEMORY.md, ERRORS.md, runninglog.txt, .claude/commands/deferred.txt. Deleted Uni-CLAUDE.md.
+[2026-05-24 14:00] — Phase 2 scaffold via 8 sub-agents (Systems Architect → Backend/Twitch/ffmpeg/Discord/TikTok/QA/DevOps in parallel). Detector deferred to Phase 1 data. Lead reconciled index.js: createEventSubRouter()→{router,emitter}, getLatestVod, processVideo(highlight,sourcePath), reviewBot singleton, post(job,clip) via clipById map. All 18 source/test files parse via node --check. npm install not run.

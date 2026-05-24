@@ -1,0 +1,27 @@
+{
+  "name": "vodminer",
+  "version": "0.1.0",
+  "description": "Automated Twitch to TikTok highlight clipping pipeline.",
+  "type": "module",
+  "main": "index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.0.0",
+    "dotenv": "^16.0.0",
+    "express": "^4.19.0",
+    "fluent-ffmpeg": "^2.1.3",
+    "pino": "^9.0.0",
+    "undici": "^6.0.0"
+  },
+  "devDependencies": {
+    "jest": "^29.0.0",
+    "nodemon": "^3.0.0"
+  }
+}

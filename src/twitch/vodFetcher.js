@@ -1,0 +1,145 @@
+import { fetch } from 'undici';
+import { spawn } from 'node:child_process';
+import { env } from '../lib/env.js';
+import { logger } from '../lib/logger.js';
+
+const HELIX = 'https://api.twitch.tv/helix';
+const OAUTH = 'https://id.twitch.tv/oauth2/token';
+const REFRESH_LEAD_MS = 5 * 60 * 1000;
+
+let cachedToken = null;
+let cachedExpiresAt = 0;
+
+export async function getAppAccessToken() {
+  if (cachedToken && Date.now() < cachedExpiresAt - REFRESH_LEAD_MS) {
+    return cachedToken;
+  }
+
+  const body = new URLSearchParams({
+    client_id: env.TWITCH_CLIENT_ID,
+    client_secret: env.TWITCH_CLIENT_SECRET,
+    grant_type: 'client_credentials',
+  });
+
+  const res = await fetch(OAUTH, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body,
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`twitch oauth failed: ${res.status} ${text}`);
+  }
+
+  const json = await res.json();
+  cachedToken = json.access_token;
+  cachedExpiresAt = Date.now() + Number(json.expires_in ?? 0) * 1000;
+  logger.info({ expiresInSec: json.expires_in }, 'twitch app access token refreshed');
+  return cachedToken;
+}
+
+async function helixGet(path, params = {}) {
+  const token = await getAppAccessToken();
+  const url = new URL(`${HELIX}${path}`);
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
+  }
+  const res = await fetch(url, {
+    headers: {
+      'Client-Id': env.TWITCH_CLIENT_ID,
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`twitch helix ${path} failed: ${res.status} ${text}`);
+  }
+  return res.json();
+}
+
+function parseDurationToSec(duration) {
+  if (typeof duration !== 'string') return 0;
+  const re = /(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?/;
+  const m = duration.match(re);
+  if (!m) return 0;
+  const h = Number(m[1] ?? 0);
+  const min = Number(m[2] ?? 0);
+  const s = Number(m[3] ?? 0);
+  return h * 3600 + min * 60 + s;
+}
+
+export async function getLatestVod(broadcasterId) {
+  const data = await helixGet('/videos', {
+    user_id: broadcasterId,
+    type: 'archive',
+    first: 1,
+  });
+  const vid = data?.data?.[0];
+  if (!vid) return null;
+  return {
+    vodId: vid.id,
+    url: vid.url,
+    durationSec: parseDurationToSec(vid.duration),
+    createdAt: vid.created_at,
+  };
+}
+
+export async function downloadVodSegment(vodId, startSec, endSec, outPath) {
+  if (!Number.isFinite(startSec) || !Number.isFinite(endSec) || endSec <= startSec) {
+    throw new Error(`invalid segment range: ${startSec}-${endSec}`);
+  }
+
+  const url = `https://www.twitch.tv/videos/${vodId}`;
+  const args = [
+    '--download-sections',
+    `*${startSec}-${endSec}`,
+    '-o',
+    outPath,
+    url,
+  ];
+
+  logger.info({ vodId, startSec, endSec, outPath }, 'downloading vod segment via yt-dlp');
+
+  return new Promise((resolve, reject) => {
+    let child;
+    try {
+      child = spawn('yt-dlp', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (err) {
+      reject(
+        new Error(
+          `yt-dlp not found on PATH. Install it (https://github.com/yt-dlp/yt-dlp) and ensure it is on the system PATH. Original: ${err.message}`,
+        ),
+      );
+      return;
+    }
+
+    let stderr = '';
+    child.stdout.on('data', (d) => logger.debug({ ytdlp: d.toString().trim() }));
+    child.stderr.on('data', (d) => {
+      stderr += d.toString();
+    });
+
+    child.on('error', (err) => {
+      if (err.code === 'ENOENT') {
+        reject(
+          new Error(
+            'yt-dlp not found on PATH. Install yt-dlp (https://github.com/yt-dlp/yt-dlp) and ensure it is on the system PATH.',
+          ),
+        );
+        return;
+      }
+      reject(err);
+    });
+
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve(outPath);
+        return;
+      }
+      reject(new Error(`yt-dlp exited with code ${code}: ${stderr.trim()}`));
+    });
+  });
+}
+
+export default { getAppAccessToken, getLatestVod, downloadVodSegment };
