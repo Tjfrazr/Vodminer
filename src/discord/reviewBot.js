@@ -89,6 +89,14 @@ async function sendPreview(clip) {
   };
 }
 
+async function sendSummary(text) {
+  if (!ready || !channel) {
+    throw new Error('reviewBot not started — call start() first');
+  }
+  const msg = await channel.send(text.slice(0, 1900));
+  return msg.url;
+}
+
 async function stop() {
   if (!ready) return;
   await client.destroy();
@@ -97,7 +105,7 @@ async function stop() {
   startPromise = null;
 }
 
-const reviewBot = { start, sendPreview, stop };
+const reviewBot = { start, sendPreview, sendSummary, stop };
 
-export { start, sendPreview, stop };
+export { start, sendPreview, sendSummary, stop };
 export default reviewBot;
