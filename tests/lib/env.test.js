@@ -7,22 +7,18 @@ const REQUIRED = [
   'TWITCH_WEBHOOK_SECRET',
   'DISCORD_BOT_TOKEN',
   'DISCORD_CHANNEL_ID',
-  'TIKTOK_CLIENT_KEY',
-  'TIKTOK_CLIENT_SECRET',
 ];
 
 function withAllEnv() {
   for (const k of REQUIRED) {
     process.env[k] = `test-${k.toLowerCase()}`;
   }
-  process.env.TIKTOK_ACCESS_TOKEN = 'test-access';
   process.env.PORT = '4242';
   process.env.LOG_LEVEL = 'silent';
 }
 
 function clearAllEnv() {
   for (const k of REQUIRED) delete process.env[k];
-  delete process.env.TIKTOK_ACCESS_TOKEN;
   delete process.env.PORT;
   delete process.env.LOG_LEVEL;
 }
@@ -36,7 +32,6 @@ describe('lib/env', () => {
   });
 
   afterAll(() => {
-    // Restore env to whatever it was before this suite.
     for (const k of Object.keys(process.env)) {
       if (!(k in snapshot)) delete process.env[k];
     }
@@ -63,7 +58,6 @@ describe('lib/env', () => {
     expect(caught).toBeDefined();
     expect(caught.message).toMatch(/TWITCH_BROADCASTER_ID/);
     expect(caught.message).toMatch(/DISCORD_BOT_TOKEN/);
-    // Vars we already set should NOT appear in the missing list.
     expect(caught.message).not.toMatch(/TWITCH_CLIENT_ID,/);
   });
 
@@ -93,12 +87,5 @@ describe('lib/env', () => {
     const mod = await import('../../src/lib/env.js');
     expect(mod.env.PORT).toBe(3000);
     expect(mod.env.LOG_LEVEL).toBe('info');
-  });
-
-  it('treats TIKTOK_ACCESS_TOKEN as optional (empty string when absent)', async () => {
-    withAllEnv();
-    delete process.env.TIKTOK_ACCESS_TOKEN;
-    const mod = await import('../../src/lib/env.js');
-    expect(mod.env.TIKTOK_ACCESS_TOKEN).toBe('');
   });
 });

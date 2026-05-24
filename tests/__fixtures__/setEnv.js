@@ -7,10 +7,7 @@ const VARS = {
   TWITCH_BROADCASTER_ID: '123456789',
   TWITCH_WEBHOOK_SECRET: 'test-webhook-secret',
   DISCORD_BOT_TOKEN: 'test-discord-token',
-  DISCORD_CHANNEL_ID: '6590249760',
-  TIKTOK_CLIENT_KEY: 'test-tiktok-key',
-  TIKTOK_CLIENT_SECRET: 'test-tiktok-secret',
-  TIKTOK_ACCESS_TOKEN: 'test-tiktok-access',
+  DISCORD_CHANNEL_ID: '999999999999999999',
   LOG_LEVEL: 'silent',
 };
 

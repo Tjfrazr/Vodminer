@@ -30,6 +30,20 @@ Read before each session. Append latest entries at the bottom (earliest → late
 - Updated plan: revised overview, removed inline credentials (moved to git secrets).
 - Merged universal working-style rules into `CLAUDE.md`. Created `MEMORY.md`, `ERRORS.md`, `runninglog.txt`, and `.claude/commands/deferred.txt`.
 
+### 2026-05-24 (session 3) — Pivot: TikTok out, Discord-only delivery
+- **Decided:** TikTok automation removed entirely. The dev app review was unsuccessful. New scope: Vodminer watches TJ's Twitch VODs (post-stream), detects exciting moments, clips them, and posts to Discord as file attachments. TJ shares to other socials manually from there.
+- **Deleted:** `src/tiktok/`, `src/scheduler/queue.js`, `tests/tiktok/`, `tests/scheduler/`, `tests/__fixtures__/tiktokResponses.js`. All `TIKTOK_*` env vars dropped from `.env.example` / `src/lib/env.js`. `tiktok` + `schedule` sections removed from `config.js`.
+- **Kept:** `privacy-policy.html` and `terms-of-service.html` — may be needed for future API access on other platforms or a TikTok re-application.
+- **Detector now real:** `src/twitch/clipDetector.js` implemented with audio-RMS spike detection (yt-dlp -f bestaudio piped to ffmpeg s16le mono 8kHz, RMS in 2s windows, threshold mean+2σ, group spikes within 8s, ±10s preroll + 30s clip length, top 15 by score). Reasonable defaults — to be tuned from real output once first VOD is processed.
+- **Discord review bot simplified:** Approve/Reject buttons + `interactionCreate` handler + EventEmitter removed. `sendPreview(clip)` now posts an embed + the mp4 attachment and returns `{ clipId, previewUrl, status: 'delivered' }`. No more clip-state lifecycle.
+- **`index.js` simplified:** scheduler/queue/`clipById` map removed. Pipeline: `stream.offline` → `getLatestVod` → `detectClips` → for each highlight `downloadVodSegment` → `processVideo` → `reviewBot.sendPreview`. Done.
+- **Clip aspect:** kept 9:16 vertical (1080×1920). TJ confirmed Reels/Shorts is still the primary target for manual sharing.
+- **Open items:**
+  - Detector thresholds (`spikeStddevs: 2.0`, etc. in `config.js`) are educated defaults — first live run will tell us if they're too tight/loose.
+  - `npm install` still not run.
+  - No detector unit test — spawn-pipe mocking is fragile; deferred to live validation.
+  - Chat-velocity signal not implemented (Twitch v5 comments endpoint is unofficial/deprecated). Audio-only for v1.
+
 ### 2026-05-24 (session 2) — Phase 2 scaffold
 - **Decided:** Approach B — scaffold + non-detector modules now, defer `clipDetector.js` and `profiles/` until Phase 1 Eklipse data exists. Lead spawned 8 sub-agents in parallel after Systems Architect set folder layout.
 - **Rejected (for now):** A (hold for 4 weeks) and C (full build with placeholder thresholds). Both pre-empted by the chosen approach.

@@ -1,7 +1,7 @@
 import { jest } from '@jest/globals';
 import path from 'node:path';
 import '../__fixtures__/setEnv.js';
-import { sampleHighlight } from '../__fixtures__/tiktokResponses.js';
+import { sampleHighlight } from '../__fixtures__/samples.js';
 
 // Build a chainable mock for fluent-ffmpeg.
 const calls = {

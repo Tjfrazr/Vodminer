@@ -7,8 +7,6 @@ const REQUIRED = [
   'TWITCH_WEBHOOK_SECRET',
   'DISCORD_BOT_TOKEN',
   'DISCORD_CHANNEL_ID',
-  'TIKTOK_CLIENT_KEY',
-  'TIKTOK_CLIENT_SECRET',
 ];
 
 const missing = REQUIRED.filter((k) => !process.env[k] || process.env[k].trim() === '');
@@ -23,9 +21,6 @@ export const env = Object.freeze({
   TWITCH_WEBHOOK_SECRET: process.env.TWITCH_WEBHOOK_SECRET,
   DISCORD_BOT_TOKEN: process.env.DISCORD_BOT_TOKEN,
   DISCORD_CHANNEL_ID: process.env.DISCORD_CHANNEL_ID,
-  TIKTOK_CLIENT_KEY: process.env.TIKTOK_CLIENT_KEY,
-  TIKTOK_CLIENT_SECRET: process.env.TIKTOK_CLIENT_SECRET,
-  TIKTOK_ACCESS_TOKEN: process.env.TIKTOK_ACCESS_TOKEN || '',
   PORT: Number(process.env.PORT || 3000),
   LOG_LEVEL: process.env.LOG_LEVEL || 'info',
 });

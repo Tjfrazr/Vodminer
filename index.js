@@ -10,22 +10,8 @@ import { getLatestVod, downloadVodSegment } from './src/twitch/vodFetcher.js';
 import detectClips from './src/twitch/clipDetector.js';
 import processVideo from './src/processing/ffmpegPipeline.js';
 import reviewBot from './src/discord/reviewBot.js';
-import { post as postToTikTok } from './src/tiktok/poster.js';
-import { createQueue } from './src/scheduler/queue.js';
 
 const app = express();
-
-const clipById = new Map();
-
-const queue = createQueue({
-  poster: async (job) => {
-    const clip = clipById.get(job.clipId);
-    if (!clip) throw new Error(`queue.poster: no clip for ${job.clipId}`);
-    const result = await postToTikTok(job, clip);
-    clipById.delete(job.clipId);
-    return result;
-  },
-});
 
 async function runPipeline(eventPayload) {
   const broadcasterId = eventPayload?.broadcasterId || env.TWITCH_BROADCASTER_ID;
@@ -46,7 +32,6 @@ async function runPipeline(eventPayload) {
       await downloadVodSegment(vod.vodId, h.startSec, h.endSec, sourcePath);
       const clip = await processVideo(h, sourcePath);
       if (!clip) continue;
-      clipById.set(clip.id, clip);
       await reviewBot.sendPreview(clip);
     } catch (err) {
       logger.warn({ err: err?.message, vodId: vod.vodId }, 'pipeline.clipError');
@@ -54,31 +39,13 @@ async function runPipeline(eventPayload) {
   }
 }
 
-reviewBot.on('approved', (clipId) => {
-  const clip = clipById.get(clipId);
-  if (!clip) {
-    logger.warn({ clipId }, 'approved.clipMissing');
-    return;
-  }
-  queue.enqueue({
-    clipId,
-    scheduledFor: new Date().toISOString(),
-    caption: '',
-    hashtags: [],
-  });
-});
-
-reviewBot.on('rejected', (clipId) => {
-  clipById.delete(clipId);
-});
-
 const { router: eventSubRouter, emitter: twitchEvents } = createEventSubRouter();
 twitchEvents.on('stream.offline', (payload) => {
   runPipeline(payload).catch((err) => logger.warn({ err: err?.message }, 'pipeline.unhandled'));
 });
 app.use('/twitch', eventSubRouter);
 
-app.get('/healthz', (_req, res) => res.json({ ok: true, queueDepth: queue.size() }));
+app.get('/healthz', (_req, res) => res.json({ ok: true }));
 
 let server = null;
 let shuttingDown = false;
@@ -89,12 +56,6 @@ async function shutdown(signal) {
   logger.info({ signal }, 'shutdown.start');
 
   if (server) await new Promise((resolve) => server.close(resolve));
-  queue.stop();
-  try {
-    await queue.drain();
-  } catch (err) {
-    logger.warn({ err: err?.message }, 'shutdown.drainError');
-  }
   try {
     await reviewBot.stop();
   } catch (err) {
@@ -111,11 +72,10 @@ export async function main() {
   await assertHostReady();
   installGlobalHandlers();
   await reviewBot.start();
-  queue.start();
   server = app.listen(env.PORT, () => {
     logger.info({ port: env.PORT }, 'server.listening');
   });
-  return { app, server, queue, reviewBot };
+  return { app, server, reviewBot };
 }
 
 const isDirectRun = import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('index.js');

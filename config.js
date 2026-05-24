@@ -7,20 +7,14 @@ export const video = {
   maxSizeBytes: 1024 * 1024 * 1024,
 };
 
-export const tiktok = {
-  dailyPostLimit: 25,
-  isAiGenerated: false,
-};
-
-export const schedule = {
-  postWindowStartHour: 19,
-  postWindowEndHour: 22,
-  minSpacingHours: 2,
-  maxSpacingHours: 3,
-};
-
 export const detector = {
-  TODO_PHASE_1_DATA: true,
+  audioSampleRate: 8000,
+  windowSec: 2,
+  spikeStddevs: 2.0,
+  groupGapWindows: 4,
+  clipLengthSec: 30,
+  preRollSec: 10,
+  maxHighlightsPerVod: 15,
 };
 
-export default { video, tiktok, schedule, detector };
+export default { video, detector };
