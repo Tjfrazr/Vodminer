@@ -99,62 +99,72 @@ export async function runPipeline(eventPayload) {
   let published = 0;
   let failed = 0;
 
-  const result = await processVod(vod, {
-    onClip: async (clip) => {
-      rendered += 1;
-      let twitchResult = null;
-      if (!skipTwitch) {
-        const title = `Highlight @ ${formatTimestamp(clip.startSec)} (${clip.score}σ)`;
-        try {
-          twitchResult = await publishClip(
-            { vodId: vod.vodId, startSec: clip.startSec, endSec: clip.endSec, title },
-            { headless: true },
-          );
-          if (twitchResult.published) published += 1;
-          else failed += 1;
-        } catch (err) {
-          failed += 1;
-          logger.warn({ err: err?.message, vodId: vod.vodId, clipId: clip.id }, 'pipeline.twitchPublishFailed');
+  let result = null;
+  let pipelineError = null;
+  try {
+    result = await processVod(vod, {
+      onClip: async (clip) => {
+        rendered += 1;
+        let twitchResult = null;
+        if (!skipTwitch) {
+          const title = `Highlight @ ${formatTimestamp(clip.startSec)} (${clip.score}σ)`;
+          try {
+            twitchResult = await publishClip(
+              { vodId: vod.vodId, startSec: clip.startSec, endSec: clip.endSec, title },
+              { headless: true },
+            );
+            if (twitchResult.published) published += 1;
+            else failed += 1;
+          } catch (err) {
+            failed += 1;
+            logger.warn({ err: err?.message, vodId: vod.vodId, clipId: clip.id }, 'pipeline.twitchPublishFailed');
+          }
         }
-      }
 
-      const key = `${vod.vodId}:${clip.startSec}-${clip.endSec}`;
-      if (!manifestSet.has(key)) {
-        manifest.clips.push({
-          vodId: vod.vodId,
-          vodUrl: vod.url,
-          clipId: clip.id,
-          filePath: clip.filePath,
-          startSec: clip.startSec,
-          endSec: clip.endSec,
-          durationSec: clip.durationSec,
-          score: clip.score,
-          createdAt: clip.createdAt,
-          twitchClipUrl: twitchResult?.clipUrl ?? null,
-          twitchPublished: !!twitchResult?.published,
-        });
-        manifestSet.add(key);
-        await saveJson(MANIFEST_FILE, manifest);
-      }
-    },
-  });
+        const key = `${vod.vodId}:${clip.startSec}-${clip.endSec}`;
+        if (!manifestSet.has(key)) {
+          manifest.clips.push({
+            vodId: vod.vodId,
+            vodUrl: vod.url,
+            clipId: clip.id,
+            filePath: clip.filePath,
+            startSec: clip.startSec,
+            endSec: clip.endSec,
+            durationSec: clip.durationSec,
+            score: clip.score,
+            createdAt: clip.createdAt,
+            twitchClipUrl: twitchResult?.clipUrl ?? null,
+            twitchPublished: !!twitchResult?.published,
+          });
+          manifestSet.add(key);
+          await saveJson(MANIFEST_FILE, manifest);
+        }
+      },
+    });
+  } catch (err) {
+    pipelineError = err;
+    logger.warn({ err: err?.message, vodId: vod.vodId }, 'pipeline.detectFailed');
+  }
 
-  await mkdir(STATE_DIR, { recursive: true });
-  const state = await loadJson(STATE_FILE, { processed: [] });
-  const processedSet = new Set(state.processed);
-  processedSet.add(vod.vodId);
-  state.processed = [...processedSet];
-  await saveJson(STATE_FILE, state);
+  if (!pipelineError) {
+    await mkdir(STATE_DIR, { recursive: true });
+    const state = await loadJson(STATE_FILE, { processed: [] });
+    const processedSet = new Set(state.processed);
+    processedSet.add(vod.vodId);
+    state.processed = [...processedSet];
+    await saveJson(STATE_FILE, state);
+  }
 
   if (!skipTwitch) await closePlaywright().catch(() => {});
 
-  const summary =
-    `**Vodminer auto-clip complete (VOD ${vod.vodId})**\n` +
-    `Highlights detected: ${rendered}\n` +
-    (skipTwitch
-      ? `Twitch upload: skipped (no playwright profile)\n`
-      : `Twitch clips published: ${published}${failed > 0 ? `  (${failed} failed)` : ''}\n`) +
-    `Manifest: \`clips/highlights-manifest.json\``;
+  const summary = pipelineError
+    ? `**Vodminer auto-clip FAILED (VOD ${vod.vodId})**\n${pipelineError.message}\nVOD not marked processed; will retry on next trigger.`
+    : `**Vodminer auto-clip complete (VOD ${vod.vodId})**\n` +
+      `Highlights detected: ${rendered}\n` +
+      (skipTwitch
+        ? `Twitch upload: skipped (no playwright profile)\n`
+        : `Twitch clips published: ${published}${failed > 0 ? `  (${failed} failed)` : ''}\n`) +
+      `Manifest: \`clips/highlights-manifest.json\``;
 
   try {
     await reviewBot.sendSummary(summary);
@@ -162,6 +172,9 @@ export async function runPipeline(eventPayload) {
     logger.warn({ err: err?.message }, 'pipeline.summaryFailed');
   }
 
+  if (pipelineError) {
+    return { vod, highlights: [], clips: [], rendered: 0, published: 0, failed: 0, error: pipelineError.message };
+  }
   return { vod, highlights: result.highlights, clips: result.clips, rendered, published, failed };
 }
 

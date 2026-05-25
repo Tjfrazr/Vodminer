@@ -10,14 +10,7 @@ export default async function detectClips(vod) {
     return [];
   }
 
-  let windows;
-  try {
-    windows = await extractRmsWindows(vod.url);
-  } catch (err) {
-    logger.warn({ err: err?.message, vodId: vod.vodId }, 'detector.audioExtractFailed');
-    return [];
-  }
-
+  const windows = await extractRmsWindows(vod.url);
   if (windows.length === 0) {
     logger.warn({ vodId: vod.vodId }, 'detector.noAudio');
     return [];
