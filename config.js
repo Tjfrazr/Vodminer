@@ -3,7 +3,7 @@ export const video = {
   height: 1920,
   codec: 'libx264',
   container: 'mp4',
-  maxDurationSec: 60,
+  maxDurationSec: 90,
   maxSizeBytes: 1024 * 1024 * 1024,
 };
 
@@ -13,7 +13,7 @@ export const detector = {
   spikeStddevs: 2.0,
   groupGapWindows: 4,
   minClipLengthSec: 45,
-  maxClipLengthSec: 60,
+  maxClipLengthSec: 90,
   preRollSec: 10,
   postRollSec: 5,
   maxHighlightsPerVod: 15,
