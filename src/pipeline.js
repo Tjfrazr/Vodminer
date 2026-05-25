@@ -98,6 +98,7 @@ export async function runPipeline(eventPayload) {
   let rendered = 0;
   let published = 0;
   let failed = 0;
+  let tiktokDrafts = 0;
 
   let result = null;
   let pipelineError = null;
@@ -115,6 +116,7 @@ export async function runPipeline(eventPayload) {
             );
             if (twitchResult.published) published += 1;
             else failed += 1;
+            if (twitchResult.tiktokDraftSent) tiktokDrafts += 1;
           } catch (err) {
             failed += 1;
             logger.warn({ err: err?.message, vodId: vod.vodId, clipId: clip.id }, 'pipeline.twitchPublishFailed');
@@ -157,19 +159,25 @@ export async function runPipeline(eventPayload) {
 
   if (!skipTwitch) await closePlaywright().catch(() => {});
 
-  const summary = pipelineError
-    ? `**Vodminer auto-clip FAILED (VOD ${vod.vodId})**\n${pipelineError.message}\nVOD not marked processed; will retry on next trigger.`
-    : `**Vodminer auto-clip complete (VOD ${vod.vodId})**\n` +
-      `Highlights detected: ${rendered}\n` +
-      (skipTwitch
-        ? `Twitch upload: skipped (no playwright profile)\n`
-        : `Twitch clips published: ${published}${failed > 0 ? `  (${failed} failed)` : ''}\n`) +
-      `Manifest: \`clips/highlights-manifest.json\``;
+  const shouldNotify = pipelineError || tiktokDrafts > 0;
+  if (shouldNotify) {
+    const summary = pipelineError
+      ? `**Vodminer auto-clip FAILED (VOD ${vod.vodId})**\n${pipelineError.message}\nVOD not marked processed; will retry on next trigger.`
+      : `**Vodminer auto-clip complete (VOD ${vod.vodId})**\n` +
+        `TikTok drafts sent: ${tiktokDrafts}\n` +
+        `Highlights detected: ${rendered}\n` +
+        (skipTwitch
+          ? `Twitch upload: skipped (no playwright profile)\n`
+          : `Twitch clips published: ${published}${failed > 0 ? `  (${failed} failed)` : ''}\n`) +
+        `Manifest: \`clips/highlights-manifest.json\``;
 
-  try {
-    await reviewBot.sendSummary(summary);
-  } catch (err) {
-    logger.warn({ err: err?.message }, 'pipeline.summaryFailed');
+    try {
+      await reviewBot.sendSummary(summary);
+    } catch (err) {
+      logger.warn({ err: err?.message }, 'pipeline.summaryFailed');
+    }
+  } else {
+    logger.info({ vodId: vod.vodId, rendered, published, tiktokDrafts }, 'pipeline.noDiscordNotify');
   }
 
   if (pipelineError) {

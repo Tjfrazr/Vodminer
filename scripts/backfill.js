@@ -91,6 +91,7 @@ async function main() {
   let totalRendered = 0;
   let totalTwitchPublished = 0;
   let totalTwitchFailed = 0;
+  let totalTiktokDrafts = 0;
   const vodSummaries = [];
 
   for (const [idx, vod] of targets.entries()) {
@@ -123,6 +124,7 @@ async function main() {
                 vFailed += 1;
                 totalTwitchFailed += 1;
               }
+              if (twitchResult.tiktokDraftSent) totalTiktokDrafts += 1;
             } catch (err) {
               vFailed += 1;
               totalTwitchFailed += 1;
@@ -168,23 +170,28 @@ async function main() {
   if (!SKIP_TWITCH) await closePlaywright();
 
   const totalSec = ((Date.now() - startedAt) / 1000).toFixed(0);
-  console.log(`\n[4/4] Done in ${totalSec}s. Rendered ${totalRendered} clips. Twitch published ${totalTwitchPublished}, failed ${totalTwitchFailed}.`);
+  console.log(`\n[4/4] Done in ${totalSec}s. Rendered ${totalRendered} clips. Twitch published ${totalTwitchPublished}, failed ${totalTwitchFailed}. TikTok drafts ${totalTiktokDrafts}.`);
 
-  const summary =
-    `**Vodminer backfill complete**\n` +
-    `VODs processed: ${targets.length}\n` +
-    `Clips rendered locally: ${totalRendered}\n` +
-    (SKIP_TWITCH
-      ? `Twitch upload: skipped\n`
-      : `Twitch clips published: ${totalTwitchPublished}${totalTwitchFailed > 0 ? `  (${totalTwitchFailed} failed)` : ''}\n`) +
-    `Elapsed: ${Math.floor(totalSec / 60)}m ${totalSec % 60}s\n` +
-    `Manifest: \`clips/highlights-manifest.json\``;
+  if (totalTiktokDrafts > 0) {
+    const summary =
+      `**Vodminer backfill complete**\n` +
+      `TikTok drafts sent: ${totalTiktokDrafts}\n` +
+      `VODs processed: ${targets.length}\n` +
+      `Highlights detected: ${totalRendered}\n` +
+      (SKIP_TWITCH
+        ? `Twitch upload: skipped\n`
+        : `Twitch clips published: ${totalTwitchPublished}${totalTwitchFailed > 0 ? `  (${totalTwitchFailed} failed)` : ''}\n`) +
+      `Elapsed: ${Math.floor(totalSec / 60)}m ${totalSec % 60}s\n` +
+      `Manifest: \`clips/highlights-manifest.json\``;
 
-  try {
-    await reviewBot.sendSummary(summary);
-    console.log('Summary posted to Discord.');
-  } catch (err) {
-    console.warn('Summary post failed:', err.message);
+    try {
+      await reviewBot.sendSummary(summary);
+      console.log('Summary posted to Discord.');
+    } catch (err) {
+      console.warn('Summary post failed:', err.message);
+    }
+  } else {
+    console.log('No TikTok drafts sent — skipping Discord notification.');
   }
 
   await reviewBot.stop();
