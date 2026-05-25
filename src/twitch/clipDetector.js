@@ -16,16 +16,29 @@ export default async function detectClips(vod) {
     return [];
   }
 
-  const stats = computeStats(windows);
-  const threshold = stats.mean + cfg.spikeStddevs * stats.stddev;
+  // Transient score: how much louder this window is than the recent rolling
+  // baseline. Sustained loud passages (cutscenes, music) have a high baseline
+  // and a small transient; action moments (gunshots, kills) have a low
+  // baseline and a sharp rise.
+  const baselineWindows = 4; // ~8s of context at windowSec=2
+  const transients = new Array(windows.length).fill(0);
+  for (let i = baselineWindows; i < windows.length; i++) {
+    let baseline = 0;
+    for (let j = i - baselineWindows; j < i; j++) baseline += windows[j];
+    baseline /= baselineWindows;
+    transients[i] = Math.max(0, windows[i] - baseline);
+  }
+
+  const transientStats = computeStats(transients);
+  const threshold = transientStats.mean + cfg.spikeStddevs * transientStats.stddev;
   const spikes = [];
-  for (let i = 0; i < windows.length; i++) {
-    if (windows[i] > threshold) spikes.push({ idx: i, rms: windows[i] });
+  for (let i = 0; i < transients.length; i++) {
+    if (transients[i] > threshold) spikes.push({ idx: i, rms: windows[i], transient: transients[i] });
   }
 
   const groups = groupAdjacentSpikes(spikes, cfg.groupGapWindows);
   const highlights = groups
-    .map((g) => buildHighlight(g, vod, stats))
+    .map((g) => buildHighlight(g, vod, transientStats))
     .sort((a, b) => b.score - a.score)
     .slice(0, cfg.maxHighlightsPerVod);
 
@@ -124,11 +137,11 @@ function groupAdjacentSpikes(spikes, maxGapWindows) {
   let cur = null;
   for (const s of spikes) {
     if (!cur || s.idx - cur.endIdx > maxGapWindows) {
-      cur = { startIdx: s.idx, endIdx: s.idx, rmsMax: s.rms };
+      cur = { startIdx: s.idx, endIdx: s.idx, transientMax: s.transient };
       groups.push(cur);
     } else {
       cur.endIdx = s.idx;
-      if (s.rms > cur.rmsMax) cur.rmsMax = s.rms;
+      if (s.transient > cur.transientMax) cur.transientMax = s.transient;
     }
   }
   return groups;
@@ -152,7 +165,7 @@ function buildHighlight(group, vod, stats) {
   }
 
   const score = stats.stddev > 0
-    ? (group.rmsMax - stats.mean) / stats.stddev
+    ? (group.transientMax - stats.mean) / stats.stddev
     : 0;
 
   return {
@@ -160,7 +173,7 @@ function buildHighlight(group, vod, stats) {
     startSec: Math.round(startSec),
     endSec: Math.round(endSec),
     score: Number(score.toFixed(2)),
-    reason: 'audio_rms_spike',
+    reason: 'audio_transient',
     spikeAtSec: Math.round(spikeMidSec),
   };
 }

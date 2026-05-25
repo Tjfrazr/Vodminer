@@ -108,6 +108,37 @@ export async function getAllVods(broadcasterId, { onPage } = {}) {
   return all;
 }
 
+export async function getViewerClipsForVod(broadcasterId, vodId, { maxPages = 5 } = {}) {
+  const out = [];
+  let cursor;
+  let page = 0;
+  do {
+    const data = await helixGet('/clips', {
+      broadcaster_id: broadcasterId,
+      first: 100,
+      after: cursor,
+    });
+    const batch = data?.data ?? [];
+    for (const c of batch) {
+      if (c.video_id !== String(vodId)) continue;
+      const offset = Number(c.vod_offset);
+      const duration = Number(c.duration);
+      if (!Number.isFinite(offset) || !Number.isFinite(duration) || duration <= 0) continue;
+      out.push({
+        clipId: c.id,
+        title: c.title,
+        creatorName: c.creator_name,
+        viewCount: Number(c.view_count) || 0,
+        vodOffsetSec: Math.max(0, Math.floor(offset)),
+        durationSec: Math.floor(duration),
+      });
+    }
+    page += 1;
+    cursor = data?.pagination?.cursor;
+  } while (cursor && page < maxPages);
+  return out;
+}
+
 export async function downloadVodSegment(vodId, startSec, endSec, outPath) {
   if (!Number.isFinite(startSec) || !Number.isFinite(endSec) || endSec <= startSec) {
     throw new Error(`invalid segment range: ${startSec}-${endSec}`);
@@ -165,4 +196,4 @@ export async function downloadVodSegment(vodId, startSec, endSec, outPath) {
   });
 }
 
-export default { getAppAccessToken, getLatestVod, getAllVods, downloadVodSegment };
+export default { getAppAccessToken, getLatestVod, getAllVods, getViewerClipsForVod, downloadVodSegment };

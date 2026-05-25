@@ -2,8 +2,9 @@ import path from 'node:path';
 import { mkdir, readFile, writeFile, stat } from 'node:fs/promises';
 import { env } from './lib/env.js';
 import { logger } from './lib/logger.js';
-import { getLatestVod } from './twitch/vodFetcher.js';
+import { getLatestVod, getViewerClipsForVod } from './twitch/vodFetcher.js';
 import detectClips from './twitch/clipDetector.js';
+import { detector as detectorCfg, video as videoCfg } from '../config.js';
 import reviewBot from './discord/reviewBot.js';
 import { publishClip, closeContext as closePlaywright } from './twitch/clipPublisher.js';
 
@@ -32,9 +33,76 @@ function formatTimestamp(sec) {
   return h > 0 ? `${h}h${m}m${s}s` : `${m}m${s}s`;
 }
 
+function expandViewerClipToTarget(vc, vodDurationSec) {
+  const minLen = detectorCfg.minClipLengthSec;
+  const maxLen = Math.min(detectorCfg.maxClipLengthSec, videoCfg.maxDurationSec);
+  const targetLen = Math.max(minLen, Math.min(maxLen, vc.durationSec + detectorCfg.preRollSec + detectorCfg.postRollSec));
+  const center = vc.vodOffsetSec + vc.durationSec / 2;
+  let startSec = Math.max(0, Math.floor(center - targetLen / 2));
+  let endSec = startSec + targetLen;
+  if (vodDurationSec && endSec > vodDurationSec) {
+    endSec = vodDurationSec;
+    startSec = Math.max(0, endSec - targetLen);
+  }
+  return { startSec, endSec };
+}
+
+const AUTO_TITLE_PATTERNS = [
+  /^Vodminer test/i,
+  /^Highlight @/i,
+  /^Title$/i,
+];
+
+function isOurAutoClip(vc) {
+  if (!vc?.title) return false;
+  return AUTO_TITLE_PATTERNS.some((re) => re.test(vc.title));
+}
+
+function mergeViewerClips(audioHighlights, viewerClips, vod) {
+  const out = [];
+  const seen = [];
+  const filtered = viewerClips.filter((vc) => !isOurAutoClip(vc));
+  for (const vc of filtered) {
+    const { startSec, endSec } = expandViewerClipToTarget(vc, vod.durationSec);
+    out.push({
+      vodId: vod.vodId,
+      startSec,
+      endSec,
+      score: 999 + (vc.viewCount || 0),
+      reason: 'viewer_clip',
+      viewerClipId: vc.clipId,
+      viewerClipTitle: vc.title,
+    });
+    seen.push({ startSec, endSec });
+  }
+  for (const h of audioHighlights) {
+    const mid = (h.startSec + h.endSec) / 2;
+    const overlap = seen.some((s) => mid >= s.startSec - 15 && mid <= s.endSec + 15);
+    if (!overlap) out.push(h);
+  }
+  return out.sort((a, b) => b.score - a.score).slice(0, detectorCfg.maxHighlightsPerVod);
+}
+
 export async function processVod(vod, { onClip } = {}) {
-  const highlights = (await detectClips(vod)) ?? [];
-  logger.info({ count: highlights.length, vodId: vod.vodId }, 'pipeline.highlights');
+  const audioHighlights = (await detectClips(vod)) ?? [];
+  let viewerClips = [];
+  try {
+    viewerClips = await getViewerClipsForVod(env.TWITCH_BROADCASTER_ID, vod.vodId);
+  } catch (err) {
+    logger.warn({ err: err?.message, vodId: vod.vodId }, 'pipeline.viewerClipsFetchFailed');
+  }
+  const realViewerClips = viewerClips.filter((vc) => !isOurAutoClip(vc));
+  const highlights = mergeViewerClips(audioHighlights, viewerClips, vod);
+  logger.info(
+    {
+      vodId: vod.vodId,
+      audio: audioHighlights.length,
+      viewerTotal: viewerClips.length,
+      viewerReal: realViewerClips.length,
+      total: highlights.length,
+    },
+    'pipeline.highlights',
+  );
 
   const clips = [];
 
