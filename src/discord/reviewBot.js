@@ -42,6 +42,7 @@ client.on('shardDisconnect', (event) => {
 });
 
 client.on('interactionCreate', async (interaction) => {
+  try {
   // Game name button clicked → show game name modal
   if (interaction.isButton() && interaction.customId.startsWith('gameinput_')) {
     const vodId = interaction.customId.slice('gameinput_'.length);
@@ -229,6 +230,12 @@ client.on('interactionCreate', async (interaction) => {
         components: [],
       }).catch(() => {}),
     );
+  }
+  } catch (err) {
+    logger.error({ err: err?.message, stack: err?.stack, id: interaction.id }, 'discord: interactionCreate error');
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.reply({ content: 'An error occurred. Please try again.', ephemeral: true }).catch(() => {});
+    }
   }
 });
 
