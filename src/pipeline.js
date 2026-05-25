@@ -33,6 +33,13 @@ function formatTimestamp(sec) {
   return h > 0 ? `${h}h${m}m${s}s` : `${m}m${s}s`;
 }
 
+function formatDuration(sec) {
+  if (!Number.isFinite(sec) || sec <= 0) return 'unknown';
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
 function expandViewerClipToTarget(vc, vodDurationSec) {
   const minLen = detectorCfg.minClipLengthSec;
   const maxLen = Math.min(detectorCfg.maxClipLengthSec, videoCfg.maxDurationSec);
@@ -88,7 +95,7 @@ function mergeViewerClips(audioHighlights, viewerClips, vod) {
   return out.sort((a, b) => b.score - a.score).slice(0, detectorCfg.maxHighlightsPerVod);
 }
 
-export async function processVod(vod, { onClip } = {}) {
+export async function processVod(vod, { onClip, gameName: passedGameName = null } = {}) {
   const audioHighlights = (await detectClips(vod)) ?? [];
   let viewerClips = [];
   try {
@@ -98,11 +105,13 @@ export async function processVod(vod, { onClip } = {}) {
   }
   const realViewerClips = viewerClips.filter((vc) => !isOurAutoClip(vc));
   const highlights = mergeViewerClips(audioHighlights, viewerClips, vod);
-  let gameName = null;
-  try {
-    gameName = await getVodGameName(vod.vodId);
-  } catch (err) {
-    logger.warn({ err: err?.message, vodId: vod.vodId }, 'pipeline.gameNameFetchFailed');
+  let gameName = passedGameName;
+  if (!gameName) {
+    try {
+      gameName = await getVodGameName(vod.vodId);
+    } catch (err) {
+      logger.warn({ err: err?.message, vodId: vod.vodId }, 'pipeline.gameNameFetchFailed');
+    }
   }
   logger.info(
     {
@@ -174,6 +183,25 @@ export async function runPipeline(eventPayload) {
     logger.warn({ vodId: vod.vodId }, 'pipeline.noPlaywrightProfile');
   }
 
+  let gameName = null;
+  try {
+    gameName = await getVodGameName(vod.vodId);
+  } catch (err) {
+    logger.warn({ err: err?.message, vodId: vod.vodId }, 'pipeline.gameNameFetchFailed');
+  }
+
+  const startSummary =
+    `**Vodminer: new VOD detected — processing...**\n` +
+    `VOD: \`${vod.vodId}\`${vod.title ? `  —  ${vod.title}` : ''}\n` +
+    `Game: ${gameName ?? 'unknown'}\n` +
+    `Duration: ${formatDuration(vod.durationSec)}\n` +
+    `Started: ${new Date().toISOString()}`;
+  try {
+    await reviewBot.sendSummary(startSummary);
+  } catch (err) {
+    logger.warn({ err: err?.message }, 'pipeline.startNotifyFailed');
+  }
+
   const manifest = await loadJson(MANIFEST_FILE, { clips: [] });
   const manifestSet = new Set(manifest.clips.map((c) => `${c.vodId}:${c.startSec}-${c.endSec}`));
 
@@ -186,6 +214,7 @@ export async function runPipeline(eventPayload) {
   let pipelineError = null;
   try {
     result = await processVod(vod, {
+      gameName,
       onClip: async (clip) => {
         rendered += 1;
         let twitchResult = null;
@@ -241,25 +270,20 @@ export async function runPipeline(eventPayload) {
 
   if (!skipTwitch) await closePlaywright().catch(() => {});
 
-  const shouldNotify = pipelineError || tiktokDrafts > 0;
-  if (shouldNotify) {
-    const summary = pipelineError
-      ? `**Vodminer auto-clip FAILED (VOD ${vod.vodId})**\n${pipelineError.message}\nVOD not marked processed; will retry on next trigger.`
-      : `**Vodminer auto-clip complete (VOD ${vod.vodId})**\n` +
-        `TikTok drafts sent: ${tiktokDrafts}\n` +
-        `Highlights detected: ${rendered}\n` +
-        (skipTwitch
-          ? `Twitch upload: skipped (no playwright profile)\n`
-          : `Twitch clips published: ${published}${failed > 0 ? `  (${failed} failed)` : ''}\n`) +
-        `Manifest: \`clips/highlights-manifest.json\``;
+  const summary = pipelineError
+    ? `**Vodminer auto-clip FAILED (VOD ${vod.vodId})**\n${pipelineError.message}\nVOD not marked processed; will retry on next trigger.`
+    : `**Vodminer auto-clip complete (VOD ${vod.vodId})**${gameName ? `  —  ${gameName}` : ''}\n` +
+      `TikTok drafts sent: ${tiktokDrafts}\n` +
+      `Highlights detected: ${rendered}\n` +
+      (skipTwitch
+        ? `Twitch upload: skipped (no playwright profile)\n`
+        : `Twitch clips published: ${published}${failed > 0 ? `  (${failed} failed)` : ''}\n`) +
+      `Manifest: \`clips/highlights-manifest.json\``;
 
-    try {
-      await reviewBot.sendSummary(summary);
-    } catch (err) {
-      logger.warn({ err: err?.message }, 'pipeline.summaryFailed');
-    }
-  } else {
-    logger.info({ vodId: vod.vodId, rendered, published, tiktokDrafts }, 'pipeline.noDiscordNotify');
+  try {
+    await reviewBot.sendSummary(summary);
+  } catch (err) {
+    logger.warn({ err: err?.message }, 'pipeline.summaryFailed');
   }
 
   if (pipelineError) {

@@ -73,6 +73,7 @@ function shapeVod(vid) {
   return {
     vodId: vid.id,
     url: vid.url,
+    title: vid.title ?? null,
     durationSec: parseDurationToSec(vid.duration),
     createdAt: vid.created_at,
   };
