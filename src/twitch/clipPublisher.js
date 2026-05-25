@@ -246,6 +246,39 @@ export async function publishClip({ vodId, startSec, endSec, title }, { headless
     }, seekTo);
     await page.waitForTimeout(2500);
 
+    // Set up GQL interception BEFORE clicking clip button — createClip fires on click.
+    let interceptedClipUrl = null;
+    const onGqlResponse = async (response) => {
+      if (!response.url().includes('gql.twitch.tv')) return;
+      try {
+        const body = await response.json().catch(() => null);
+        if (!body) return;
+        const items = Array.isArray(body) ? body : [body];
+        for (const item of items) {
+          if (interceptedClipUrl) continue;
+          const d = item?.data;
+          if (!d) continue;
+          // Twitch uses createClipFromRawMedia, not createClip
+          const created = d.createClipFromRawMedia ?? d.createClip;
+          if (created) {
+            const slug = created?.clip?.slug ?? created?.clip?.id ?? created?.slug ?? created?.id;
+            if (slug) { interceptedClipUrl = `https://clips.twitch.tv/${slug}`; return; }
+            if (created?.clip?.url) { interceptedClipUrl = created.clip.url; return; }
+            logger.info({ vodId, created: JSON.stringify(created).slice(0, 300) }, 'playwright: GQL createClip shape');
+          }
+          // clip query responses also carry the slug
+          const clipData = d.clip;
+          if (clipData) {
+            const slug = clipData?.slug ?? clipData?.id;
+            if (slug) { interceptedClipUrl = `https://clips.twitch.tv/${slug}`; return; }
+            if (clipData?.url) { interceptedClipUrl = clipData.url; return; }
+            logger.info({ vodId, clipData: JSON.stringify(clipData).slice(0, 300) }, 'playwright: GQL clip data shape');
+          }
+        }
+      } catch {}
+    };
+    page.on('response', onGqlResponse);
+
     const clipBtn = await findFirst(page, CLIP_BUTTON_SELECTORS);
     if (!clipBtn) {
       await dumpFailure(page, vodId, 'no-clip-button');
@@ -306,7 +339,7 @@ export async function publishClip({ vodId, startSec, endSec, title }, { headless
 
     let success = false;
     try {
-      await editorPage.waitForSelector(POST_PUBLISH_SELECTOR, { timeout: 20000 });
+      await editorPage.waitForSelector(POST_PUBLISH_SELECTOR, { timeout: 45000 });
       success = true;
     } catch {
       await dumpFailure(editorPage, vodId, 'no-post-publish-signal');
@@ -317,48 +350,12 @@ export async function publishClip({ vodId, startSec, endSec, title }, { headless
       tiktokDraftSent = await shareToTikTok(editorPage, vodId);
     }
 
-    // The editor opens as a modal overlay so editorPage.url() stays as the VOD URL.
-    // After saving, Twitch renders the real clip URL in a link/input on the page.
-    // Start as null so callers get null (not the VOD URL) when extraction fails.
-    let clipUrl = null;
-    if (success) {
-      await editorPage.waitForTimeout(1500);
-      try {
-        const extracted = await editorPage.evaluate(() => {
-          // Anchor link
-          const a = document.querySelector('a[href*="clips.twitch.tv"]');
-          if (a) return a.href;
-          // Input field
-          const inp = Array.from(document.querySelectorAll('input'))
-            .find((el) => el.value?.includes('clips.twitch.tv'));
-          if (inp) return inp.value;
-          // Input near the "Copy clip link" button
-          const copyBtn = document.querySelector('[aria-label="Copy clip link button"]');
-          if (copyBtn) {
-            const container = copyBtn.closest('[class]') || copyBtn.parentElement;
-            if (container) {
-              const nearInp = container.querySelector('input');
-              if (nearInp?.value?.includes('clips.twitch.tv')) return nearInp.value;
-            }
-          }
-          // Any element whose textContent matches a Twitch clips URL
-          const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-          let node;
-          while ((node = walker.nextNode())) {
-            const m = node.textContent.match(/https:\/\/clips\.twitch\.tv\/\S+/);
-            if (m) return m[0];
-          }
-          return null;
-        });
-        if (extracted) {
-          clipUrl = extracted;
-          logger.info({ vodId, clipUrl }, 'playwright: extracted clip URL');
-        } else {
-          logger.warn({ vodId }, 'playwright: could not extract clip URL from page');
-        }
-      } catch (err) {
-        logger.warn({ err: err?.message, vodId }, 'playwright: clip URL extraction failed');
-      }
+    editorPage.off('response', onGqlResponse);
+    const clipUrl = interceptedClipUrl;
+    if (clipUrl) {
+      logger.info({ vodId, clipUrl }, 'playwright: captured clip URL from GQL');
+    } else {
+      logger.warn({ vodId }, 'playwright: clip URL not captured from GQL response');
     }
     return { vodId, startSec, endSec, clipUrl, published: success, tiktokDraftSent };
   } finally {
