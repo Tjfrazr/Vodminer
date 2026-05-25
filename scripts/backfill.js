@@ -111,7 +111,8 @@ async function main() {
 
           let twitchResult = null;
           if (!SKIP_TWITCH) {
-            const title = `Highlight @ ${formatTimestamp(clip.startSec)} (${clip.score}σ)`;
+            const ts = formatTimestamp(clip.startSec);
+            const title = clip.gameName ? `${clip.gameName} highlight @ ${ts}` : `Highlight @ ${ts}`;
             try {
               twitchResult = await publishClip(
                 { vodId: vod.vodId, startSec: clip.startSec, endSec: clip.endSec, title },

@@ -108,6 +108,28 @@ export async function getAllVods(broadcasterId, { onPage } = {}) {
   return all;
 }
 
+export async function getVodGameName(vodId) {
+  const url = `https://www.twitch.tv/videos/${vodId}`;
+  const res = await fetch(url, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0',
+      Accept: 'text/html',
+    },
+  });
+  if (!res.ok) return null;
+  const html = await res.text();
+  // og:description / twitter:description format:
+  //   "<user> went live on Twitch. Catch up on their <GAME> VOD now."
+  const m = /Catch up on their (.+?) VOD now/i.exec(html);
+  if (!m || !m[1]) return null;
+  // Twitch HTML-encodes apostrophes etc; decode the few common entities.
+  return m[1]
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .trim();
+}
+
 export async function getViewerClipsForVod(broadcasterId, vodId, { maxPages = 5 } = {}) {
   const out = [];
   let cursor;
@@ -196,4 +218,4 @@ export async function downloadVodSegment(vodId, startSec, endSec, outPath) {
   });
 }
 
-export default { getAppAccessToken, getLatestVod, getAllVods, getViewerClipsForVod, downloadVodSegment };
+export default { getAppAccessToken, getLatestVod, getAllVods, getVodGameName, getViewerClipsForVod, downloadVodSegment };

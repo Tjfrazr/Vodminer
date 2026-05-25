@@ -2,7 +2,7 @@ import path from 'node:path';
 import { mkdir, readFile, writeFile, stat } from 'node:fs/promises';
 import { env } from './lib/env.js';
 import { logger } from './lib/logger.js';
-import { getLatestVod, getViewerClipsForVod } from './twitch/vodFetcher.js';
+import { getLatestVod, getViewerClipsForVod, getVodGameName } from './twitch/vodFetcher.js';
 import detectClips from './twitch/clipDetector.js';
 import { detector as detectorCfg, video as videoCfg } from '../config.js';
 import reviewBot from './discord/reviewBot.js';
@@ -49,9 +49,14 @@ function expandViewerClipToTarget(vc, vodDurationSec) {
 
 const AUTO_TITLE_PATTERNS = [
   /^Vodminer test/i,
-  /^Highlight @/i,
+  /highlight @ \d/i,
   /^Title$/i,
 ];
+
+function buildClipTitle(gameName, startSec) {
+  const ts = formatTimestamp(startSec);
+  return gameName ? `${gameName} highlight @ ${ts}` : `Highlight @ ${ts}`;
+}
 
 function isOurAutoClip(vc) {
   if (!vc?.title) return false;
@@ -93,6 +98,12 @@ export async function processVod(vod, { onClip } = {}) {
   }
   const realViewerClips = viewerClips.filter((vc) => !isOurAutoClip(vc));
   const highlights = mergeViewerClips(audioHighlights, viewerClips, vod);
+  let gameName = null;
+  try {
+    gameName = await getVodGameName(vod.vodId);
+  } catch (err) {
+    logger.warn({ err: err?.message, vodId: vod.vodId }, 'pipeline.gameNameFetchFailed');
+  }
   logger.info(
     {
       vodId: vod.vodId,
@@ -116,6 +127,9 @@ export async function processVod(vod, { onClip } = {}) {
         score: h.score,
         createdAt: new Date().toISOString(),
         filePath: null,
+        gameName,
+        reason: h.reason,
+        viewerClipTitle: h.viewerClipTitle ?? null,
       };
       clips.push(clip);
       if (typeof onClip === 'function') await onClip(clip);
@@ -176,7 +190,7 @@ export async function runPipeline(eventPayload) {
         rendered += 1;
         let twitchResult = null;
         if (!skipTwitch) {
-          const title = `Highlight @ ${formatTimestamp(clip.startSec)} (${clip.score}σ)`;
+          const title = buildClipTitle(clip.gameName, clip.startSec);
           try {
             twitchResult = await publishClip(
               { vodId: vod.vodId, startSec: clip.startSec, endSec: clip.endSec, title },
