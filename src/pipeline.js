@@ -8,6 +8,23 @@ import { detector as detectorCfg, video as videoCfg } from '../config.js';
 import reviewBot from './discord/reviewBot.js';
 import { publishClip, closeContext as closePlaywright } from './twitch/clipPublisher.js';
 
+reviewBot.onApprove(async ({ clipId, vodId, startSec, endSec, gameName }) => {
+  const title = buildClipTitle(gameName, startSec);
+  try {
+    const result = await publishClip(
+      { vodId, startSec, endSec, title },
+      { headless: true, skipTikTok: false },
+    );
+    logger.info({ clipId, sent: result.tiktokDraftSent }, 'pipeline.approve.tiktok');
+    return { sent: result.tiktokDraftSent };
+  } catch (err) {
+    logger.warn({ err: err?.message, clipId }, 'pipeline.approve.failed');
+    return { sent: false };
+  } finally {
+    await closePlaywright().catch(() => {});
+  }
+});
+
 const STATE_DIR = path.resolve('state');
 const STATE_FILE = path.join(STATE_DIR, 'processed-vods.json');
 const MANIFEST_FILE = path.resolve('clips', 'highlights-manifest.json');
@@ -92,7 +109,8 @@ function mergeViewerClips(audioHighlights, viewerClips, vod) {
     const overlap = seen.some((s) => mid >= s.startSec - 15 && mid <= s.endSec + 15);
     if (!overlap) out.push(h);
   }
-  return out.sort((a, b) => b.score - a.score).slice(0, detectorCfg.maxHighlightsPerVod);
+  return out.sort((a, b) => b.score - a.score).slice(0, detectorCfg.maxHighlightsPerVod)
+    .sort((a, b) => a.startSec - b.startSec);
 }
 
 export async function processVod(vod, { onClip, gameName: passedGameName = null } = {}) {
@@ -168,6 +186,14 @@ async function waitForNewVod(broadcasterId, { intervalMs = 30000, timeoutMs = 60
   return null;
 }
 
+export async function checkForUnprocessedVod(broadcasterId) {
+  const state = await loadJson(STATE_FILE, { processed: [] });
+  const processedSet = new Set(state.processed);
+  const vod = await getLatestVod(broadcasterId);
+  if (vod && !processedSet.has(vod.vodId)) return vod;
+  return null;
+}
+
 export async function runPipeline(eventPayload) {
   const broadcasterId = eventPayload?.broadcasterId || env.TWITCH_BROADCASTER_ID;
   logger.info({ broadcasterId }, 'pipeline.start');
@@ -188,6 +214,12 @@ export async function runPipeline(eventPayload) {
     gameName = await getVodGameName(vod.vodId);
   } catch (err) {
     logger.warn({ err: err?.message, vodId: vod.vodId }, 'pipeline.gameNameFetchFailed');
+  }
+
+  try {
+    gameName = await reviewBot.askGameName(vod.vodId, gameName);
+  } catch (err) {
+    logger.warn({ err: err?.message }, 'pipeline.gameNameAskFailed');
   }
 
   const startSummary =
@@ -223,7 +255,7 @@ export async function runPipeline(eventPayload) {
           try {
             twitchResult = await publishClip(
               { vodId: vod.vodId, startSec: clip.startSec, endSec: clip.endSec, title },
-              { headless: true },
+              { headless: true, skipTikTok: env.SKIP_TIKTOK_DRAFTS },
             );
             if (twitchResult.published) published += 1;
             else failed += 1;
@@ -245,6 +277,9 @@ export async function runPipeline(eventPayload) {
             endSec: clip.endSec,
             durationSec: clip.durationSec,
             score: clip.score,
+            gameName: clip.gameName ?? null,
+            reason: clip.reason ?? null,
+            viewerClipTitle: clip.viewerClipTitle ?? null,
             createdAt: clip.createdAt,
             twitchClipUrl: twitchResult?.clipUrl ?? null,
             twitchPublished: !!twitchResult?.published,
@@ -252,6 +287,17 @@ export async function runPipeline(eventPayload) {
           manifestSet.add(key);
           await saveJson(MANIFEST_FILE, manifest);
         }
+
+        await reviewBot.sendClipRating({
+          clipId: clip.id,
+          gameName: clip.gameName,
+          startSec: clip.startSec,
+          score: clip.score,
+          reason: clip.reason,
+          viewerClipTitle: clip.viewerClipTitle,
+          twitchClipUrl: twitchResult?.clipUrl ?? null,
+          vodId: vod.vodId,
+        }).catch((err) => logger.warn({ err: err?.message }, 'pipeline.ratingMessageFailed'));
       },
     });
   } catch (err) {

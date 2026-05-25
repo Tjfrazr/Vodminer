@@ -225,7 +225,7 @@ async function shareToTikTok(page, vodId) {
   return true;
 }
 
-export async function publishClip({ vodId, startSec, endSec, title }, { headless = false } = {}) {
+export async function publishClip({ vodId, startSec, endSec, title }, { headless = false, skipTikTok = false } = {}) {
   const ctx = await getContext({ headless });
   const page = await ctx.newPage();
 
@@ -313,11 +313,53 @@ export async function publishClip({ vodId, startSec, endSec, title }, { headless
     }
 
     let tiktokDraftSent = false;
-    if (success) {
+    if (success && !skipTikTok) {
       tiktokDraftSent = await shareToTikTok(editorPage, vodId);
     }
 
-    const clipUrl = editorPage.url();
+    // The editor opens as a modal overlay so editorPage.url() stays as the VOD URL.
+    // After saving, Twitch renders the real clip URL in a link/input on the page.
+    // Start as null so callers get null (not the VOD URL) when extraction fails.
+    let clipUrl = null;
+    if (success) {
+      await editorPage.waitForTimeout(1500);
+      try {
+        const extracted = await editorPage.evaluate(() => {
+          // Anchor link
+          const a = document.querySelector('a[href*="clips.twitch.tv"]');
+          if (a) return a.href;
+          // Input field
+          const inp = Array.from(document.querySelectorAll('input'))
+            .find((el) => el.value?.includes('clips.twitch.tv'));
+          if (inp) return inp.value;
+          // Input near the "Copy clip link" button
+          const copyBtn = document.querySelector('[aria-label="Copy clip link button"]');
+          if (copyBtn) {
+            const container = copyBtn.closest('[class]') || copyBtn.parentElement;
+            if (container) {
+              const nearInp = container.querySelector('input');
+              if (nearInp?.value?.includes('clips.twitch.tv')) return nearInp.value;
+            }
+          }
+          // Any element whose textContent matches a Twitch clips URL
+          const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+          let node;
+          while ((node = walker.nextNode())) {
+            const m = node.textContent.match(/https:\/\/clips\.twitch\.tv\/\S+/);
+            if (m) return m[0];
+          }
+          return null;
+        });
+        if (extracted) {
+          clipUrl = extracted;
+          logger.info({ vodId, clipUrl }, 'playwright: extracted clip URL');
+        } else {
+          logger.warn({ vodId }, 'playwright: could not extract clip URL from page');
+        }
+      } catch (err) {
+        logger.warn({ err: err?.message, vodId }, 'playwright: clip URL extraction failed');
+      }
+    }
     return { vodId, startSec, endSec, clipUrl, published: success, tiktokDraftSent };
   } finally {
     await page.close().catch(() => {});

@@ -16,7 +16,7 @@ export const detector = {
   maxClipLengthSec: 90,
   preRollSec: 10,
   postRollSec: 5,
-  maxHighlightsPerVod: 15,
+  maxHighlightsPerVod: 20,
 };
 
 export default { video, detector };

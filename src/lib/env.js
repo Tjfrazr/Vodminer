@@ -23,6 +23,7 @@ export const env = Object.freeze({
   DISCORD_CHANNEL_ID: process.env.DISCORD_CHANNEL_ID,
   PORT: Number(process.env.PORT || 3000),
   LOG_LEVEL: process.env.LOG_LEVEL || 'info',
+  SKIP_TIKTOK_DRAFTS: process.env.SKIP_TIKTOK_DRAFTS === 'true',
 });
 
 export default env;

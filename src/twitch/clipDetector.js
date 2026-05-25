@@ -20,7 +20,7 @@ export default async function detectClips(vod) {
   // baseline. Sustained loud passages (cutscenes, music) have a high baseline
   // and a small transient; action moments (gunshots, kills) have a low
   // baseline and a sharp rise.
-  const baselineWindows = 4; // ~8s of context at windowSec=2
+  const baselineWindows = 20; // ~40s of context at windowSec=2; longer = better sustained-combat detection
   const transients = new Array(windows.length).fill(0);
   for (let i = baselineWindows; i < windows.length; i++) {
     let baseline = 0;
