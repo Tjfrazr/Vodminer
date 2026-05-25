@@ -11,6 +11,7 @@ import {
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
+  MessageFlags,
 } from 'discord.js';
 import { env } from '../lib/env.js';
 import { logger } from '../lib/logger.js';
@@ -45,6 +46,7 @@ client.on('shardDisconnect', (event) => {
 
 client.on('interactionCreate', async (interaction) => {
   try {
+  logger.info({ type: interaction.type, customId: interaction.customId ?? null, id: interaction.id }, 'discord: interaction received');
   // Game name button clicked → show game name modal
   if (interaction.isButton() && interaction.customId.startsWith('gameinput_')) {
     const vodId = interaction.customId.slice('gameinput_'.length);
@@ -165,7 +167,8 @@ client.on('interactionCreate', async (interaction) => {
   if (interaction.isModalSubmit() && interaction.customId.startsWith('disapprovemodal_')) {
     const clipId = interaction.customId.slice('disapprovemodal_'.length);
     const reason = interaction.fields.getTextInputValue('reason').trim() || null;
-    await interaction.deferUpdate();
+    // Acknowledge the modal immediately so Discord doesn't show "interaction failed"
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     let disapproveLine = reason ? `**Disapproved** — ${reason}` : `**Disapproved**`;
     try {
       const raw = await readFile(MANIFEST_FILE, 'utf8');
@@ -194,19 +197,17 @@ client.on('interactionCreate', async (interaction) => {
           const slug = clip.twitchClipUrl.split('clips.twitch.tv/')[1];
           await deleteClip(slug).catch((err) => logger.warn({ err: err?.message, slug }, 'discord: twitch deleteClip error'));
         }
+        // Edit the original clip message to remove buttons and show disapproval
+        await interaction.message?.edit({
+          content: `${interaction.message.content}\n${disapproveLine}`,
+          components: [],
+        }).catch((err) => logger.warn({ err: err?.message, clipId }, 'discord: disapprove message edit failed'));
       }
     } catch (err) {
       logger.warn({ err: err?.message, clipId }, 'discord: disapprove save failed');
     }
-    await interaction.editReply({
-      content: `${interaction.message.content}\n${disapproveLine}`,
-      components: [],
-    }).catch(() =>
-      interaction.message?.edit({
-        content: `${interaction.message.content}\n${disapproveLine}`,
-        components: [],
-      }).catch(() => {}),
-    );
+    // Delete the ephemeral "thinking" reply — the clip message itself is updated above
+    await interaction.deleteReply().catch(() => {});
     return;
   }
 
@@ -249,7 +250,7 @@ client.on('interactionCreate', async (interaction) => {
     const score = Number(interaction.fields.getTextInputValue('score').trim());
     const reason = interaction.fields.getTextInputValue('reason').trim() || null;
     if (!Number.isInteger(score) || score < 1 || score > 10) {
-      await interaction.reply({ content: 'Score must be a whole number 1–10.', ephemeral: true }).catch(() => {});
+      await interaction.reply({ content: 'Score must be a whole number 1–10.', flags: MessageFlags.Ephemeral }).catch(() => {});
       return;
     }
     await interaction.deferUpdate();
@@ -304,7 +305,7 @@ client.on('interactionCreate', async (interaction) => {
   } catch (err) {
     logger.error({ err: err?.message, stack: err?.stack, id: interaction.id }, 'discord: interactionCreate error');
     if (!interaction.replied && !interaction.deferred) {
-      await interaction.reply({ content: 'An error occurred. Please try again.', ephemeral: true }).catch(() => {});
+      await interaction.reply({ content: 'An error occurred. Please try again.', flags: MessageFlags.Ephemeral }).catch(() => {});
     }
   }
 });
