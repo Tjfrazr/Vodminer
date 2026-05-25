@@ -58,6 +58,32 @@ async function helixGet(path, params = {}) {
   return res.json();
 }
 
+// Requires TWITCH_USER_ACCESS_TOKEN env var (user OAuth with clips:edit scope).
+// Set that var to enable Twitch-side clip deletion on disapprove.
+export async function deleteClip(clipSlug) {
+  const userToken = process.env.TWITCH_USER_ACCESS_TOKEN;
+  if (!userToken) {
+    logger.warn({ clipSlug }, 'twitch: deleteClip skipped — TWITCH_USER_ACCESS_TOKEN not set');
+    return false;
+  }
+  const url = new URL(`${HELIX}/clips`);
+  url.searchParams.set('id', clipSlug);
+  const res = await fetch(url, {
+    method: 'DELETE',
+    headers: {
+      'Client-Id': env.TWITCH_CLIENT_ID,
+      Authorization: `Bearer ${userToken}`,
+    },
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    logger.warn({ clipSlug, status: res.status, text }, 'twitch: deleteClip failed');
+    return false;
+  }
+  logger.info({ clipSlug }, 'twitch: clip deleted');
+  return true;
+}
+
 function parseDurationToSec(duration) {
   if (typeof duration !== 'string') return 0;
   const re = /(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?/;
@@ -132,34 +158,39 @@ export async function getVodGameName(vodId) {
 }
 
 export async function getViewerClipsForVod(broadcasterId, vodId, { maxPages = 5 } = {}) {
-  const out = [];
-  let cursor;
-  let page = 0;
-  do {
-    const data = await helixGet('/clips', {
-      broadcaster_id: broadcasterId,
-      first: 100,
-      after: cursor,
-    });
-    const batch = data?.data ?? [];
-    for (const c of batch) {
-      if (c.video_id !== String(vodId)) continue;
-      const offset = Number(c.vod_offset);
-      const duration = Number(c.duration);
-      if (!Number.isFinite(offset) || !Number.isFinite(duration) || duration <= 0) continue;
-      out.push({
-        clipId: c.id,
-        title: c.title,
-        creatorName: c.creator_name,
-        viewCount: Number(c.view_count) || 0,
-        vodOffsetSec: Math.max(0, Math.floor(offset)),
-        durationSec: Math.floor(duration),
-      });
-    }
-    page += 1;
-    cursor = data?.pagination?.cursor;
-  } while (cursor && page < maxPages);
-  return out;
+  const clipsById = new Map();
+
+  async function paginateClips(params) {
+    let cursor;
+    let page = 0;
+    do {
+      const data = await helixGet('/clips', { ...params, first: 100, after: cursor });
+      const batch = data?.data ?? [];
+      for (const c of batch) {
+        if (c.video_id !== String(vodId) || clipsById.has(c.id)) continue;
+        const offset = Number(c.vod_offset);
+        const duration = Number(c.duration);
+        if (!Number.isFinite(offset) || !Number.isFinite(duration) || duration <= 0) continue;
+        clipsById.set(c.id, {
+          clipId: c.id,
+          title: c.title,
+          creatorName: c.creator_name,
+          viewCount: Number(c.view_count) || 0,
+          vodOffsetSec: Math.max(0, Math.floor(offset)),
+          durationSec: Math.floor(duration),
+        });
+      }
+      page += 1;
+      cursor = data?.pagination?.cursor;
+    } while (cursor && page < maxPages);
+  }
+
+  // All clips on the channel (viewers + broadcaster), sorted newest first
+  await paginateClips({ broadcaster_id: broadcasterId });
+  // Broadcaster's own clips specifically — catches any buried past maxPages in the first query
+  await paginateClips({ broadcaster_id: broadcasterId, creator_id: broadcasterId });
+
+  return [...clipsById.values()];
 }
 
 export async function downloadVodSegment(vodId, startSec, endSec, outPath) {

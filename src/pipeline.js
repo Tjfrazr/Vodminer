@@ -28,6 +28,7 @@ reviewBot.onApprove(async ({ clipId, vodId, startSec, endSec, gameName }) => {
 const STATE_DIR = path.resolve('state');
 const STATE_FILE = path.join(STATE_DIR, 'processed-vods.json');
 const MANIFEST_FILE = path.resolve('clips', 'highlights-manifest.json');
+const BANNED_RANGES_FILE = path.join(STATE_DIR, 'banned-ranges.json');
 const PROFILE_DIR = path.join(STATE_DIR, 'playwright-profile');
 
 async function loadJson(p, fallback) {
@@ -87,7 +88,7 @@ function isOurAutoClip(vc) {
   return AUTO_TITLE_PATTERNS.some((re) => re.test(vc.title));
 }
 
-function mergeViewerClips(audioHighlights, viewerClips, vod) {
+function mergeViewerClips(audioHighlights, viewerClips, vod, bannedRanges = []) {
   const out = [];
   const seen = [];
   const filtered = viewerClips.filter((vc) => !isOurAutoClip(vc));
@@ -109,7 +110,14 @@ function mergeViewerClips(audioHighlights, viewerClips, vod) {
     const overlap = seen.some((s) => mid >= s.startSec - 15 && mid <= s.endSec + 15);
     if (!overlap) out.push(h);
   }
-  return out.sort((a, b) => b.score - a.score).slice(0, detectorCfg.maxHighlightsPerVod)
+  const vodBanned = bannedRanges.filter((b) => b.vodId === vod.vodId);
+  const notBanned = out.filter((h) =>
+    !vodBanned.some((b) => h.startSec < b.endSec && h.endSec > b.startSec),
+  );
+  if (notBanned.length < out.length) {
+    logger.info({ vodId: vod.vodId, skipped: out.length - notBanned.length }, 'pipeline.bannedRangesFiltered');
+  }
+  return notBanned.sort((a, b) => b.score - a.score).slice(0, detectorCfg.maxHighlightsPerVod)
     .sort((a, b) => a.startSec - b.startSec);
 }
 
@@ -122,7 +130,8 @@ export async function processVod(vod, { onClip, gameName: passedGameName = null 
     logger.warn({ err: err?.message, vodId: vod.vodId }, 'pipeline.viewerClipsFetchFailed');
   }
   const realViewerClips = viewerClips.filter((vc) => !isOurAutoClip(vc));
-  const highlights = mergeViewerClips(audioHighlights, viewerClips, vod);
+  const { banned: bannedRanges = [] } = await loadJson(BANNED_RANGES_FILE, { banned: [] });
+  const highlights = mergeViewerClips(audioHighlights, viewerClips, vod, bannedRanges);
   let gameName = passedGameName;
   if (!gameName) {
     try {

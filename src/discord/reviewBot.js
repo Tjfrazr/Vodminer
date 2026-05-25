@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { stat, readFile, writeFile } from 'node:fs/promises';
+import { stat, readFile, writeFile, mkdir } from 'node:fs/promises';
 import {
   Client,
   GatewayIntentBits,
@@ -14,9 +14,11 @@ import {
 } from 'discord.js';
 import { env } from '../lib/env.js';
 import { logger } from '../lib/logger.js';
+import { deleteClip } from '../twitch/vodFetcher.js';
 
 const DISCORD_FREE_ATTACHMENT_LIMIT = 25 * 1024 * 1024;
 const MANIFEST_FILE = path.resolve('clips', 'highlights-manifest.json');
+const BANNED_RANGES_FILE = path.resolve('state', 'banned-ranges.json');
 
 function fmtTimestamp(sec) {
   const h = Math.floor(sec / 3600);
@@ -138,6 +140,76 @@ client.on('interactionCreate', async (interaction) => {
     return;
   }
 
+  // Disapprove button clicked → show reason modal
+  if (interaction.isButton() && interaction.customId.startsWith('disapprove_')) {
+    const clipId = interaction.customId.slice('disapprove_'.length);
+    const modal = new ModalBuilder()
+      .setCustomId(`disapprovemodal_${clipId}`)
+      .setTitle('Disapprove clip');
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('reason')
+          .setLabel('Why is this bad? (optional)')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(false)
+          .setMaxLength(200)
+          .setPlaceholder('e.g. loading screen, boring lobby, wrong segment...'),
+      ),
+    );
+    await interaction.showModal(modal);
+    return;
+  }
+
+  // Disapprove modal submitted → mark manifest, ban range, remove buttons
+  if (interaction.isModalSubmit() && interaction.customId.startsWith('disapprovemodal_')) {
+    const clipId = interaction.customId.slice('disapprovemodal_'.length);
+    const reason = interaction.fields.getTextInputValue('reason').trim() || null;
+    await interaction.deferUpdate();
+    let disapproveLine = reason ? `**Disapproved** — ${reason}` : `**Disapproved**`;
+    try {
+      const raw = await readFile(MANIFEST_FILE, 'utf8');
+      const manifest = JSON.parse(raw);
+      const clip = manifest.clips.find((c) => c.clipId === clipId);
+      if (clip) {
+        clip.disapproved = true;
+        clip.disapprovedAt = new Date().toISOString();
+        clip.disapproveReason = reason;
+        await writeFile(MANIFEST_FILE, JSON.stringify(manifest, null, 2) + '\n', 'utf8');
+        // Save banned range so the pipeline skips this segment on re-runs
+        await mkdir(path.dirname(BANNED_RANGES_FILE), { recursive: true });
+        let banned;
+        try { banned = JSON.parse(await readFile(BANNED_RANGES_FILE, 'utf8')); } catch { banned = { banned: [] }; }
+        banned.banned.push({
+          vodId: clip.vodId,
+          startSec: clip.startSec,
+          endSec: clip.endSec,
+          disapprovedAt: clip.disapprovedAt,
+          reason,
+        });
+        await writeFile(BANNED_RANGES_FILE, JSON.stringify(banned, null, 2) + '\n', 'utf8');
+        logger.info({ clipId, vodId: clip.vodId, startSec: clip.startSec, endSec: clip.endSec, reason }, 'discord: clip disapproved, range banned');
+        // Delete from Twitch if we have a user token and a clip URL
+        if (clip.twitchClipUrl?.includes('clips.twitch.tv/')) {
+          const slug = clip.twitchClipUrl.split('clips.twitch.tv/')[1];
+          await deleteClip(slug).catch((err) => logger.warn({ err: err?.message, slug }, 'discord: twitch deleteClip error'));
+        }
+      }
+    } catch (err) {
+      logger.warn({ err: err?.message, clipId }, 'discord: disapprove save failed');
+    }
+    await interaction.editReply({
+      content: `${interaction.message.content}\n${disapproveLine}`,
+      components: [],
+    }).catch(() =>
+      interaction.message?.edit({
+        content: `${interaction.message.content}\n${disapproveLine}`,
+        components: [],
+      }).catch(() => {}),
+    );
+    return;
+  }
+
   // Rate modal submitted → save score + reason, keep Approve button
   if (interaction.isModalSubmit() && interaction.customId.startsWith('ratemodal_')) {
     const withoutPrefix = interaction.customId.slice('ratemodal_'.length);
@@ -160,15 +232,13 @@ client.on('interactionCreate', async (interaction) => {
       logger.warn({ err: err?.message, clipId }, 'discord: rating save failed');
     }
     const ratingLine = reason ? `**Rated ${score}/10** — ${reason}` : `**Rated ${score}/10**`;
-    const approveRow = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(`approve_${clipId}`)
-        .setLabel('✅ Approve + TikTok')
-        .setStyle(ButtonStyle.Success),
+    const actionRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`approve_${clipId}`).setLabel('✅ Approve + TikTok').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`disapprove_${clipId}`).setLabel('❌ Disapprove').setStyle(ButtonStyle.Danger),
     );
     await interaction.update({
       content: `${interaction.message.content}\n${ratingLine}`,
-      components: [approveRow],
+      components: [actionRow],
     });
     return;
   }
@@ -337,13 +407,11 @@ async function sendClipRating({ clipId, gameName, startSec, score, reason, viewe
     `-# Rate this clip (tap a number to add a comment)`,
   ].join('\n');
 
-  const approveRow = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`approve_${clipId}`)
-      .setLabel('✅ Approve + TikTok')
-      .setStyle(ButtonStyle.Success),
+  const actionRow = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`approve_${clipId}`).setLabel('✅ Approve + TikTok').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId(`disapprove_${clipId}`).setLabel('❌ Disapprove').setStyle(ButtonStyle.Danger),
   );
-  await channel.send({ content, components: [...rows, approveRow] });
+  await channel.send({ content, components: [...rows, actionRow] });
 }
 
 async function askGameName(vodId, suggestedGame, timeoutMs = 120000) {
