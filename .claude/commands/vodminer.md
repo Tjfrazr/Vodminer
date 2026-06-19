@@ -6,44 +6,23 @@ Boot Vodminer for live use. Idempotent — safe to re-run; existing tunnel and s
 
 Do these steps in order, reporting one tight line after each. Stop and report immediately if any step fails — do not push through.
 
-## 0. Working directory
-`c:/Users/Vito/Vodminer`. All paths relative to that.
-
-## 1. PATH binaries
-Reload PATH from the Windows registry inside every PowerShell call (Claude Code's shell inherits stale PATH on Windows):
-
+## 0. Detect platform & working directory
+On macOS/Linux use the repo root from cwd. On Windows use `c:/Users/Vito/Vodminer` and reload PATH from the registry in every PowerShell call:
 ```powershell
 $env:PATH = [System.Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + [System.Environment]::GetEnvironmentVariable('PATH', 'User')
 ```
 
-Verify `ffmpeg`, `ffprobe`, `yt-dlp`, `ngrok` all resolve via `Get-Command`. If any missing, stop and tell user to run `winget install Gyan.FFmpeg yt-dlp.yt-dlp ngrok.ngrok`.
+## 1. PATH binaries
+Verify `ffmpeg`, `ffprobe`, `yt-dlp`, `ngrok` all resolve (`which` on macOS/Linux, `Get-Command` on Windows). If any missing, stop and tell user to install (`brew install ffmpeg yt-dlp ngrok` / `winget install Gyan.FFmpeg yt-dlp.yt-dlp ngrok.ngrok`).
 
 ## 2. Reuse-or-start ngrok
-Check `http://localhost:4040/api/tunnels` first (ngrok's local control API):
-
-```powershell
-try { (Invoke-RestMethod -Uri 'http://localhost:4040/api/tunnels').tunnels[0].public_url } catch { '' }
-```
-
-- If a URL comes back, reuse it.
-- Otherwise launch `ngrok http 3000` in the background with PATH preloaded. Wait 3 seconds. Query the API again.
-
-Expected output: a URL like `https://xxx.ngrok-free.dev`. Save as `$NGROK_URL`.
-
-If ngrok's update warning fires (`agent too old`), run `ngrok update` once and retry.
+Query `http://localhost:4040/api/tunnels` for an existing `public_url`. If a URL comes back, reuse it. Otherwise launch `ngrok http 3000` in the background, wait 3 seconds, query again. Save the URL as `$NGROK_URL`. If ngrok's update warning fires (`agent too old`), run `ngrok update` once and retry.
 
 ## 3. Reuse-or-start server
-Check if port 3000 is already listening:
-
-```powershell
-(Test-NetConnection -ComputerName localhost -Port 3000 -InformationLevel Quiet -WarningAction SilentlyContinue)
-```
-
-- If `True`, the server is already up. Skip the launch.
-- Otherwise launch `npm start` in the background from `c:/Users/Vito/Vodminer` with PATH preloaded. Tail its log file until you see `"server.listening"` (success) or `"main.fatal"` (failure). Timeout 30s.
+Check if port 3000 is already listening. If so, skip. Otherwise launch `npm start` in the background from the Vodminer directory. Tail its log until you see `"server.listening"` (success) or `"main.fatal"` (failure). Timeout 30s.
 
 ## 4. Register the EventSub subscription
-Run from `c:/Users/Vito/Vodminer`:
+Run from the Vodminer directory:
 
 ```bash
 node scripts/register-eventsub.js $NGROK_URL/twitch/webhook
