@@ -1,53 +1,54 @@
 # Vodminer
 
-Automated Twitch-to-TikTok highlight clipping pipeline. Detects highlights from Twitch VODs using audio spikes and chat velocity, clips them with ffmpeg, sends previews to Discord for review, and posts approved clips to TikTok.
+Automated Twitch highlight detection and clipping pipeline. After a stream ends, Vodminer analyzes the VOD for exciting moments, creates Twitch Clips, and sends them to Discord for review. Approved clips are queued as TikTok drafts via Twitch's share UI.
 
 ## Architecture
 
 ```
 Twitch EventSub (stream.offline webhook)
   -> Fetch VOD via Twitch API
-  -> Highlight detection (audio RMS spikes + chat velocity)
-  -> ffmpeg processing (crop 9:16, captions, H.264 1080x1920)
+  -> Highlight detection (audio RMS spike analysis via yt-dlp + ffmpeg)
+  -> Create Twitch Clip via Playwright browser automation
   -> Discord bot preview (Approve / Disapprove buttons)
-  -> TikTok Content Posting API (Direct Post on approve)
+  -> On approve: send to TikTok as a draft via Twitch's share UI
 ```
 
 ## Project Structure
 
 ```
 index.js                    Entry point (Express server + Discord bot)
-config.js                   Video output spec + detection thresholds
+config.js                   Detection thresholds and video settings
 src/
   twitch/
-    eventSub.js             EventSub webhook listener
-    vodFetcher.js           VOD download via Twitch API
-    clipDetector.js         Audio RMS + chat velocity highlight detection
-    clipPublisher.js        Clip metadata and publishing
+    eventSub.js             EventSub webhook listener (HMAC-verified)
+    vodFetcher.js           VOD metadata + segment download via Twitch API
+    clipDetector.js         Audio RMS spike detection (yt-dlp + ffmpeg)
+    clipPublisher.js        Playwright automation: Twitch clip editor + TikTok draft
     profiles/               Game-specific detection profiles
   processing/
-    ffmpegPipeline.js       ffmpeg pipeline (crop, resize, caption)
+    ffmpegPipeline.js       ffmpeg pipeline (crop, resize, caption) for local previews
   discord/
     reviewBot.js            Review bot with Approve/Disapprove buttons
   lib/
     env.js                  Environment variable validation
     logger.js               Pino structured logging
     alerts.js               Discord webhook error alerts
-    healthcheck.js          Host readiness checks (ffmpeg, yt-dlp)
+    healthcheck.js          Host readiness checks (ffmpeg, yt-dlp, Playwright)
     types.js                JSDoc type definitions
 scripts/
   register-eventsub.js      Register Twitch EventSub subscription
   reprocess-vod.js          Reprocess a specific VOD
   backfill.js               Backfill past VODs
-  twitch-login.js           Twitch OAuth helper
+  twitch-login.js           Twitch OAuth / Playwright session login helper
   test-*.js                 Manual integration test scripts
 ```
 
 ## Requirements
 
 - Node.js 20+
-- ffmpeg and ffprobe
-- yt-dlp
+- ffmpeg and ffprobe (audio analysis and local clip processing)
+- yt-dlp (VOD audio download for detection)
+- Playwright Chromium (Twitch clip creation and TikTok draft export)
 - ngrok (for local development — Twitch EventSub requires a public HTTPS URL)
 
 ### Install (macOS)
@@ -55,6 +56,7 @@ scripts/
 ```bash
 brew install ffmpeg yt-dlp ngrok
 npm install
+npx playwright install chromium
 ```
 
 ### Install (Windows)
@@ -62,6 +64,7 @@ npm install
 ```powershell
 winget install Gyan.FFmpeg yt-dlp.yt-dlp ngrok.ngrok
 npm install
+npx playwright install chromium
 ```
 
 ## Setup
@@ -77,23 +80,29 @@ cp .env.example .env
 | `TWITCH_CLIENT_ID` | [Twitch Developer Console](https://dev.twitch.tv/console/apps) |
 | `TWITCH_CLIENT_SECRET` | Same app registration |
 | `TWITCH_BROADCASTER_ID` | Twitch API users endpoint for your channel |
-| `TWITCH_WEBHOOK_SECRET` | Any random string you generate |
+| `TWITCH_WEBHOOK_SECRET` | Any random string you generate (10–100 chars) |
 | `DISCORD_BOT_TOKEN` | [Discord Developer Portal](https://discord.com/developers/applications) |
-| `DISCORD_CHANNEL_ID` | Right-click channel in Discord (Developer Mode) |
+| `DISCORD_CHANNEL_ID` | Right-click channel in Discord (Developer Mode on) |
 
-2. Start ngrok to get a public URL:
+2. Log in to Twitch in the Playwright browser profile (one-time):
+
+```bash
+node scripts/twitch-login.js
+```
+
+3. Start ngrok to get a public URL:
 
 ```bash
 ngrok http 3000
 ```
 
-3. Register the EventSub subscription:
+4. Register the EventSub subscription:
 
 ```bash
 node scripts/register-eventsub.js https://YOUR-NGROK-URL/twitch/webhook
 ```
 
-4. Start the server:
+5. Start the server:
 
 ```bash
 npm start
@@ -104,19 +113,17 @@ npm start
 Once running, the pipeline is fully automatic:
 
 1. Stream on Twitch
-2. End your stream (triggers `stream.offline` webhook)
-3. Vodminer fetches the VOD, detects highlights, and clips them
-4. Clips appear in your Discord channel with Approve/Disapprove buttons
-5. Approved clips are posted to TikTok
+2. End your stream — triggers `stream.offline` webhook
+3. Vodminer analyzes the VOD audio for highlight moments
+4. For each highlight, Playwright opens the Twitch clip editor and creates a Twitch Clip
+5. Clips appear in your Discord channel with Approve / Disapprove buttons
+6. **Approve**: Playwright sends the clip to TikTok as a draft (appears in TikTok Studio for you to review and post)
+7. **Disapprove**: clip is deleted from Twitch and the time range is banned from future detection
 
-## Video Output
+## Clip Limits
 
-All clips: MP4, H.264, 1080x1920 (9:16 vertical), 45-90 seconds, max 1GB.
-
-## API Limits
-
-- TikTok: 25 videos per account per day
-- Twitch VOD clips: 5-60 seconds per clip
+- Twitch Clips: max 60 seconds
+- TikTok: clips land as drafts in TikTok Studio — manual publish required
 
 ## License
 
