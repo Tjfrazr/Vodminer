@@ -17,3 +17,10 @@ Thumbs.db
 clips/
 pm2.log
 state/
+
+# Internal dev files
+MEMORY.md
+ERRORS.md
+runninglog.txt
+stream_to_tiktok_plan-2.md
+.claude/commands/

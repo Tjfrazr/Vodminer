@@ -1,4 +1,0 @@
-# Deferred tasks — append-only. Never rewrite existing lines.
-# Format: [status] [return-by YYYY-MM-DD] <text>  (added YYYY-MM-DD)
-# Status legend: 🔴 overdue · 🟡 due today · 🟢 upcoming
-
