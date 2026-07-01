@@ -43,15 +43,39 @@ class FakeAttachmentBuilder {
   constructor(p) { this.path = p; }
 }
 
+// Generic chainable stand-in for the button/modal/text-input builders.
+class FakeBuilder {
+  setCustomId() { return this; }
+  setLabel() { return this; }
+  setStyle() { return this; }
+  setTitle() { return this; }
+  setPlaceholder() { return this; }
+  setRequired() { return this; }
+  setValue() { return this; }
+  setMinLength() { return this; }
+  setMaxLength() { return this; }
+  addComponents() { return this; }
+}
+
 jest.unstable_mockModule('discord.js', () => ({
   Client: FakeClient,
   GatewayIntentBits: { Guilds: 1 },
   EmbedBuilder: FakeEmbedBuilder,
   AttachmentBuilder: FakeAttachmentBuilder,
+  ActionRowBuilder: FakeBuilder,
+  ButtonBuilder: FakeBuilder,
+  ButtonStyle: { Primary: 1, Secondary: 2, Success: 3, Danger: 4 },
+  ModalBuilder: FakeBuilder,
+  TextInputBuilder: FakeBuilder,
+  TextInputStyle: { Short: 1, Paragraph: 2 },
+  MessageFlags: { Ephemeral: 64 },
 }));
 
 jest.unstable_mockModule('node:fs/promises', () => ({
   stat: jest.fn(async () => ({ size: 1024 * 1024 })),
+  readFile: jest.fn(async () => '{}'),
+  writeFile: jest.fn(async () => undefined),
+  mkdir: jest.fn(async () => undefined),
 }));
 
 const reviewBot = await import('../../src/discord/reviewBot.js');

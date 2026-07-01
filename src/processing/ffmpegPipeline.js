@@ -119,7 +119,8 @@ export default async function process(highlight, sourceVideoPath, captions) {
 
   await new Promise((resolve, reject) => {
     ffmpeg(sourceVideoPath)
-      .setDuration(video.maxDurationSec)
+      .setStartTime(start)
+      .setDuration(duration)
       .videoCodec(video.codec)
       .audioCodec('aac')
       .videoFilters(videoFilter)

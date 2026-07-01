@@ -2,6 +2,7 @@ import { jest } from '@jest/globals';
 import path from 'node:path';
 import '../__fixtures__/setEnv.js';
 import { sampleHighlight } from '../__fixtures__/samples.js';
+import { video } from '../../config.js';
 
 // Build a chainable mock for fluent-ffmpeg.
 const calls = {
@@ -112,10 +113,10 @@ describe('processing/ffmpegPipeline', () => {
     expect(chain).toContain('setsar=1');
   });
 
-  it('clamps duration to <= 60s even when highlight span is longer', async () => {
+  it('clamps duration to the max cap even when highlight span is longer', async () => {
     const long = { ...sampleHighlight, startSec: 100, endSec: 300 };
     await processClip(long, '/tmp/source.mp4');
-    expect(calls.duration[0]).toBeLessThanOrEqual(60);
+    expect(calls.duration[0]).toBeLessThanOrEqual(video.maxDurationSec);
   });
 
   it('passes the highlight startSec to ffmpeg setStartTime', async () => {

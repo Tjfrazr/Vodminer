@@ -2,9 +2,9 @@ import path from 'node:path';
 import { mkdir, readFile, writeFile, stat } from 'node:fs/promises';
 import { env } from './lib/env.js';
 import { logger } from './lib/logger.js';
-import { getLatestVod, getViewerClipsForVod, getVodGameName } from './twitch/vodFetcher.js';
-import detectClips from './twitch/clipDetector.js';
-import { detector as detectorCfg, video as videoCfg } from '../config.js';
+import { getLatestVod, getVodGameName } from './twitch/vodFetcher.js';
+import { runDetectors } from './detectors/index.js';
+import { mergeHighlights } from './detectors/merge.js';
 import reviewBot from './discord/reviewBot.js';
 import { publishClip, closeContext as closePlaywright } from './twitch/clipPublisher.js';
 
@@ -58,80 +58,17 @@ function formatDuration(sec) {
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
-function expandViewerClipToTarget(vc, vodDurationSec) {
-  const minLen = detectorCfg.minClipLengthSec;
-  const maxLen = Math.min(detectorCfg.maxClipLengthSec, videoCfg.maxDurationSec);
-  const targetLen = Math.max(minLen, Math.min(maxLen, vc.durationSec + detectorCfg.preRollSec + detectorCfg.postRollSec));
-  const center = vc.vodOffsetSec + vc.durationSec / 2;
-  let startSec = Math.max(0, Math.floor(center - targetLen / 2));
-  let endSec = startSec + targetLen;
-  if (vodDurationSec && endSec > vodDurationSec) {
-    endSec = vodDurationSec;
-    startSec = Math.max(0, endSec - targetLen);
-  }
-  return { startSec, endSec };
-}
-
-const AUTO_TITLE_PATTERNS = [
-  /^Vodminer test/i,
-  /highlight @ \d/i,
-  /^Title$/i,
-];
-
 function buildClipTitle(gameName, startSec) {
   const ts = formatTimestamp(startSec);
   return gameName ? `${gameName} highlight @ ${ts}` : `Highlight @ ${ts}`;
 }
 
-function isOurAutoClip(vc) {
-  if (!vc?.title) return false;
-  return AUTO_TITLE_PATTERNS.some((re) => re.test(vc.title));
-}
-
-function mergeViewerClips(audioHighlights, viewerClips, vod, bannedRanges = []) {
-  const out = [];
-  const seen = [];
-  const filtered = viewerClips.filter((vc) => !isOurAutoClip(vc));
-  for (const vc of filtered) {
-    const { startSec, endSec } = expandViewerClipToTarget(vc, vod.durationSec);
-    out.push({
-      vodId: vod.vodId,
-      startSec,
-      endSec,
-      score: 999 + (vc.viewCount || 0),
-      reason: 'viewer_clip',
-      viewerClipId: vc.clipId,
-      viewerClipTitle: vc.title,
-    });
-    seen.push({ startSec, endSec });
-  }
-  for (const h of audioHighlights) {
-    const mid = (h.startSec + h.endSec) / 2;
-    const overlap = seen.some((s) => mid >= s.startSec - 15 && mid <= s.endSec + 15);
-    if (!overlap) out.push(h);
-  }
-  const vodBanned = bannedRanges.filter((b) => b.vodId === vod.vodId);
-  const notBanned = out.filter((h) =>
-    !vodBanned.some((b) => h.startSec < b.endSec && h.endSec > b.startSec),
-  );
-  if (notBanned.length < out.length) {
-    logger.info({ vodId: vod.vodId, skipped: out.length - notBanned.length }, 'pipeline.bannedRangesFiltered');
-  }
-  return notBanned.sort((a, b) => b.score - a.score).slice(0, detectorCfg.maxHighlightsPerVod)
-    .sort((a, b) => a.startSec - b.startSec);
-}
-
 export async function processVod(vod, { onClip, gameName: passedGameName = null } = {}) {
-  const audioHighlights = (await detectClips(vod)) ?? [];
-  let viewerClips = [];
-  try {
-    viewerClips = await getViewerClipsForVod(env.TWITCH_BROADCASTER_ID, vod.vodId);
-  } catch (err) {
-    logger.warn({ err: err?.message, vodId: vod.vodId }, 'pipeline.viewerClipsFetchFailed');
-  }
-  const realViewerClips = viewerClips.filter((vc) => !isOurAutoClip(vc));
+  const detectorResults = await runDetectors(vod);
+  const allHighlights = detectorResults.flatMap((r) => r.highlights);
+  const detectorsFailed = detectorResults.filter((r) => r.error).map((r) => r.name);
   const { banned: bannedRanges = [] } = await loadJson(BANNED_RANGES_FILE, { banned: [] });
-  const highlights = mergeViewerClips(audioHighlights, viewerClips, vod, bannedRanges);
+  const highlights = mergeHighlights(allHighlights, { vod, bannedRanges });
   let gameName = passedGameName;
   if (!gameName) {
     try {
@@ -143,9 +80,8 @@ export async function processVod(vod, { onClip, gameName: passedGameName = null 
   logger.info(
     {
       vodId: vod.vodId,
-      audio: audioHighlights.length,
-      viewerTotal: viewerClips.length,
-      viewerReal: realViewerClips.length,
+      byDetector: Object.fromEntries(detectorResults.map((r) => [r.name, r.highlights.length])),
+      detectorsFailed,
       total: highlights.length,
     },
     'pipeline.highlights',
@@ -174,7 +110,7 @@ export async function processVod(vod, { onClip, gameName: passedGameName = null 
     }
   }
 
-  return { vod, highlights, clips };
+  return { vod, highlights, clips, detectorsFailed };
 }
 
 async function waitForNewVod(broadcasterId, { intervalMs = 30000, timeoutMs = 60 * 60 * 1000 } = {}) {
@@ -333,6 +269,7 @@ export async function runPipeline(eventPayload) {
       (skipTwitch
         ? `Twitch upload: skipped (no playwright profile)\n`
         : `Twitch clips published: ${published}${failed > 0 ? `  (${failed} failed)` : ''}\n`) +
+      (result?.detectorsFailed?.length ? `⚠️ Detectors failed: ${result.detectorsFailed.join(', ')}\n` : '') +
       `Manifest: \`clips/highlights-manifest.json\``;
 
   try {

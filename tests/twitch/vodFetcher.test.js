@@ -81,6 +81,7 @@ describe('twitch/vodFetcher', () => {
       expect(vod).toEqual({
         vodId: helixVideosResponse.data[0].id,
         url: helixVideosResponse.data[0].url,
+        title: helixVideosResponse.data[0].title,
         durationSec: 3 * 3600 + 45 * 60 + 12,
         createdAt: helixVideosResponse.data[0].created_at,
       });
