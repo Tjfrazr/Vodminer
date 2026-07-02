@@ -1,0 +1,67 @@
+# Unfinished Tasks — pick up where we left off
+
+Last updated after Vodminer v2 Phase 1 shipped. Formal tjloop is closed;
+Phase 2 (YouTube) is being built incrementally/collaboratively.
+
+## Status
+- ✅ **Phase 1 DONE** — detector registry + ffmpeg motion detector.
+  Shipped to `main` (commit 35f0a1c), verified 9.7/10. See `docs/v2-phase1-goal.md`.
+- 🔜 **Phase 2 IN PROGRESS** — YouTube uploads (raw VOD + Shorts).
+
+## Phase 2 — the shaping fact
+The current pipeline **never produces a local video file** — publishing is
+100% Playwright (creates a Twitch clip in-browser, clicks "Send Draft to
+TikTok"; `filePath` is always `null`). YouTube's Content API has **no
+share-UI shortcut — it needs actual video bytes uploaded.** So Phase 2 must
+ADD local video production that doesn't exist today:
+- **Raw VOD → YouTube:** yt-dlp full VOD download → upload. No rendering.
+- **Shorts → YouTube:** `downloadVodSegment` (exists) → render 9:16 (resurrect
+  the currently-dead `src/processing/ffmpegPipeline.js`) → caption → upload.
+
+## TJ's to-do (only you can do this — blocks live testing)
+1. Google Cloud Console → new project (`Vodminer`).
+2. Enable **YouTube Data API v3**.
+3. OAuth consent screen: External; scope `.../auth/youtube.upload`; add
+   yourself as a Test user; leave in "Testing".
+4. Credentials → **OAuth client ID** → **Desktop app** → copy Client ID +
+   Secret.
+5. Provide `YOUTUBE_CLIENT_ID` + `YOUTUBE_CLIENT_SECRET` (git secrets).
+   Then run the `scripts/youtube-login.js` (Claude will build) ONCE to capture
+   `YOUTUBE_REFRESH_TOKEN`.
+6. (Later) file the YouTube API **audit** to unlock non-private visibility.
+
+## Verified gotchas
+- **Pre-audit, EVERY upload is locked to `private`** — not unlisted, not
+  public. Both raw-VOD-unlisted and Shorts-public visibility wait on the
+  audit. We can build/test fully with private uploads; audit flips visibility
+  later. (Confirmed vs Google docs, Jul 2026.)
+- Upload = **1,600 quota units** each; default 10k/day ≈ **6 uploads/day**.
+- OAuth "Testing" mode refresh tokens can expire in ~7 days; a long-lived
+  token needs the consent screen published ("In production"). Resolve when
+  wiring `youtube-login.js`.
+
+## Decisions made
+- Evolve existing JS in place (NOT a TS rewrite).
+- Build the YouTube uploader now, unit-tested against a **mocked** API; TJ sets
+  up OAuth in parallel; live smoke-test after.
+
+## Open decisions (pick when we resume)
+- **First loop scope:** 2a raw-VOD→unlisted (simplest, recommended) vs
+  2b Shorts→public (bigger: render + caption + approval) vs both at once.
+- **HTTP client:** official `googleapis` pkg (recommended — resumable upload +
+  token refresh are fiddly) vs hand-rolled over `undici` (already a dep, leaner
+  footprint).
+- Shorts approval UX: same "Approve + TikTok" button also fires YouTube, or a
+  separate action? Caption modal fires before upload.
+
+## New env vars Phase 2 will add
+`YOUTUBE_CLIENT_ID`, `YOUTUBE_CLIENT_SECRET`, `YOUTUBE_REFRESH_TOKEN`
+
+## Carried-forward follow-ups (from Phase 1)
+- `src/twitch/clipDetector.js` has the same latent no-timeout hang the motion
+  detector fixed (H1/H2 class) — apply the same guard; consider a shared
+  killable-child helper.
+- Tune `detector.motion.sceneThreshold` against a real VOD.
+- One live run to confirm real multi-hour VOD download wall-clock.
+- Consider a single shared decode feeding both audio + motion (avoids the
+  sequential double download).
