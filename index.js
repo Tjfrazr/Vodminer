@@ -5,7 +5,7 @@ import { assertHostReady } from './src/lib/healthcheck.js';
 import { installGlobalHandlers } from './src/lib/alerts.js';
 import { createEventSubRouter } from './src/twitch/eventSub.js';
 import reviewBot from './src/discord/reviewBot.js';
-import { runPipeline } from './src/pipeline.js';
+import { runPipeline, checkForUnprocessedVod } from './src/pipeline.js';
 
 const app = express();
 
@@ -38,6 +38,20 @@ async function shutdown(signal) {
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 
+async function runStartupCatchup() {
+  try {
+    const vod = await checkForUnprocessedVod(env.TWITCH_BROADCASTER_ID);
+    if (!vod) {
+      logger.info('startup.catchup.none');
+      return;
+    }
+    logger.info({ vodId: vod.vodId }, 'startup.catchup.found');
+    await runPipeline({ broadcasterId: env.TWITCH_BROADCASTER_ID });
+  } catch (err) {
+    logger.warn({ err: err?.message }, 'startup.catchup.failed');
+  }
+}
+
 export async function main() {
   await assertHostReady();
   installGlobalHandlers();
@@ -45,6 +59,7 @@ export async function main() {
   server = app.listen(env.PORT, () => {
     logger.info({ port: env.PORT }, 'server.listening');
   });
+  runStartupCatchup();
   return { app, server, reviewBot };
 }
 

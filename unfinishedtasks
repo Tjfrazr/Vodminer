@@ -65,3 +65,105 @@ ADD local video production that doesn't exist today:
 - One live run to confirm real multi-hour VOD download wall-clock.
 - Consider a single shared decode feeding both audio + motion (avoids the
   sequential double download).
+
+## Session 2026-07-06 — uncommitted changes, server NOT restarted yet
+
+**Do not restart the Vodminer server until the in-progress catch-up run on
+VOD `2813242741` is confirmed finished in #clip-reviews** (TJ asked to hold
+off — restarting would kill it mid-run since it's an in-memory process, no
+persistence).
+
+Uncommitted, working-tree only (not yet committed/pushed):
+- `index.js` — wired the previously-dead `checkForUnprocessedVod` (already
+  existed in `src/pipeline.js`, was never called) into server startup.
+  On boot, checks for an unprocessed VOD and runs `runPipeline()`
+  automatically — the "catches up on videos it hasn't clipped yet" behavior
+  TJ remembered but which had never actually been wired to `index.js`
+  despite commit `61e4916`'s message claiming it was.
+- `src/detectors/index.js` + `src/pipeline.js` — added live Discord progress
+  pings during the (previously silent, 20-30+ min) download/detection phase.
+  `runDetectors` now takes an optional `onProgress` callback, awaited before/
+  after each detector; `runPipeline` wires it to `reviewBot.sendSummary`:
+  `🔎 Running detector: X...` → `✅ X: N highlights (Ys)` or `⚠️ X failed
+  after Ys: <error>`. Only wired into the live/catch-up path (`runPipeline`),
+  not `scripts/backfill.js` (bulk/non-interactive by design — could extend
+  later if wanted).
+- `docs/v2-phase2-youtube-architecture.md` (new file) — full research +
+  architecture blueprint for Phase 2/3 YouTube publishing (100% free/OSS
+  tooling only, per TJ's explicit constraint). Decided: title generation
+  (`metadata/seoText.js`, not yet built) will be shared across both the
+  Twitch clip path and YouTube path; auto-editing/rendering/thumbnails stay
+  YouTube-only (Twitch Clips are rendered server-side by Twitch, no local
+  file to edit, no custom-thumbnail API). See doc §4.7/§4.7.1 for the
+  reasoning. Tests: `tests/detectors/runDetectors.test.js` passes with the
+  new `onProgress` param; full suite otherwise unaffected by this diff.
+
+**Environment setup done this session** (not code, but required before any
+of the above can run for real):
+- ngrok authtoken configured + agent updated 3.3.1 → 3.39.9 (was blocking
+  the tunnel entirely — `ERR_NGROK_4018` then `ERR_NGROK_121`).
+- Playwright Chromium installed (`npx playwright install chromium`) — was
+  missing, blocked `twitch-login.js`.
+- `state/playwright-profile/` created via one-time interactive
+  `scripts/twitch-login.js` login — this machine had never had a Twitch
+  browser session before. Twitch clip publishing (and TikTok drafts) will
+  not work without this; it's now done.
+
+**Bug surfaced, not yet fixed:** `audioTransient` detector failed on VOD
+`2813242741` with `yt-dlp exit 1` right at 100% download (270MB, ~4min,
+frag 1083/1085) — looked like a transient network/pipe glitch after a full
+download, not a config issue. Left a 7.4MB orphaned `--Frag1` file
+(MPEG-TS) in the repo root — untracked, safe to delete, not yet deleted
+(TJ hasn't confirmed). Worth a retry/resilience pass on yt-dlp invocation
+if this recurs.
+
+**Pre-existing, unrelated test failures found (not caused by this
+session's diff — confirmed via `git diff --stat`, `env.js` untouched):**
+`tests/lib/env.test.js` — 2 failing (`throws when required vars are
+missing`, `lists every missing variable name`). Looks like a test-isolation
+/ module-cache issue rather than a real env.js bug. Not fixed yet — TJ
+hasn't said whether to prioritize this or keep deferring.
+
+**Next steps when resuming:**
+1. Check #clip-reviews for VOD `2813242741`'s final summary before touching
+   the server.
+2. Restart the server once confirmed idle — picks up the startup catch-up
+   wiring + progress pings together.
+3. Decide on the two flagged items above (env test fix, `--Frag1` cleanup).
+4. Architecture doc is design-only — no Phase 2a code (YouTube OAuth/upload)
+   started yet; still blocked on TJ's Google Cloud OAuth setup per the
+   original Phase 2 to-do list above.
+
+## Update — VOD 2813242741 result + a real bug fixed (still same session)
+
+The catch-up run on `2813242741` finished: **both** `audioTransient`
+(yt-dlp exit 1 at 100% of a 270MB download) and `motion` (hit its 30-min
+timeout) failed. 0 highlights, 0 clips. Looks like a network/download
+reliability issue on this machine at the time, not a config bug — both
+failures were at the download step.
+
+**Bug found and fixed:** `src/pipeline.js`'s `runPipeline` was marking a
+VOD as "processed" even when every detector failed (per-detector failures
+are caught inside `runDetectors` and returned as data, not thrown, so
+`processVod` never threw and the "skip marking processed" branch never
+triggered). `2813242741` got silently marked done with zero clips — nothing
+would have ever retried it. Fixed: `processVod` now also returns
+`detectorsRun`; `runPipeline` treats "all detectors failed" the same as a
+thrown `pipelineError` (VOD stays unmarked, Discord gets a `FAILED`
+summary). Logged in `ERRORS.md` with full detail. Tests still pass (same
+2 pre-existing `env.test.js` failures, nothing new broken).
+
+**Retry in progress:** `node scripts/reprocess-vod.js 2813242741 "Forza
+Horizon 6"` launched as a separate process (task `bl61gyrii`) — doesn't
+touch the live server, doesn't consult `processed-vods.json` (fetches VOD
+by ID directly). Re-running all 3 detectors fresh; could take a while again
+if the same download issue recurs. Check #clip-reviews for
+"Vodminer reprocess complete (VOD 2813242741)" or a failure message.
+
+**Known remaining gap (not fixed, flagged for later):** `audioTransient`
+(the underlying `src/twitch/clipDetector.js`-style yt-dlp piping) still has
+**no timeout at all** — if it ever hangs instead of erroring, there's no
+ceiling and no failure signal, ever. `motion` already has this guard
+(`detector.motion.timeoutMs`, and it fired correctly this run). Same
+class as the H1/H2 fix already applied to motion in Phase 1 — apply the
+same guard to audioTransient.

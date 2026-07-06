@@ -63,8 +63,8 @@ function buildClipTitle(gameName, startSec) {
   return gameName ? `${gameName} highlight @ ${ts}` : `Highlight @ ${ts}`;
 }
 
-export async function processVod(vod, { onClip, gameName: passedGameName = null } = {}) {
-  const detectorResults = await runDetectors(vod);
+export async function processVod(vod, { onClip, gameName: passedGameName = null, onDetectorProgress } = {}) {
+  const detectorResults = await runDetectors(vod, undefined, { onProgress: onDetectorProgress });
   const allHighlights = detectorResults.flatMap((r) => r.highlights);
   const detectorsFailed = detectorResults.filter((r) => r.error).map((r) => r.name);
   const { banned: bannedRanges = [] } = await loadJson(BANNED_RANGES_FILE, { banned: [] });
@@ -110,7 +110,7 @@ export async function processVod(vod, { onClip, gameName: passedGameName = null 
     }
   }
 
-  return { vod, highlights, clips, detectorsFailed };
+  return { vod, highlights, clips, detectorsFailed, detectorsRun: detectorResults.length };
 }
 
 async function waitForNewVod(broadcasterId, { intervalMs = 30000, timeoutMs = 60 * 60 * 1000 } = {}) {
@@ -187,11 +187,27 @@ export async function runPipeline(eventPayload) {
   let failed = 0;
   let tiktokDrafts = 0;
 
+  const onDetectorProgress = async ({ name, phase, count, tookMs, error }) => {
+    const sec = tookMs != null ? (tookMs / 1000).toFixed(1) : null;
+    const msg =
+      phase === 'start'
+        ? `🔎 Running detector: \`${name}\`...`
+        : phase === 'done'
+          ? `✅ \`${name}\`: ${count} highlight${count === 1 ? '' : 's'} (${sec}s)`
+          : `⚠️ \`${name}\` failed after ${sec}s: ${error}`;
+    try {
+      await reviewBot.sendSummary(msg);
+    } catch (err) {
+      logger.warn({ err: err?.message }, 'pipeline.detectorProgressNotifyFailed');
+    }
+  };
+
   let result = null;
   let pipelineError = null;
   try {
     result = await processVod(vod, {
       gameName,
+      onDetectorProgress,
       onClip: async (clip) => {
         rendered += 1;
         let twitchResult = null;
@@ -250,7 +266,17 @@ export async function runPipeline(eventPayload) {
     logger.warn({ err: err?.message, vodId: vod.vodId }, 'pipeline.detectFailed');
   }
 
-  if (!pipelineError) {
+  // Every detector erroring out is functionally the same as processVod throwing —
+  // no highlights were legitimately evaluated. Treat it like a pipelineError so the
+  // VOD stays unmarked and gets retried, instead of being indistinguishable from a
+  // VOD that genuinely had zero highlights.
+  const allDetectorsFailed =
+    !pipelineError && result && result.detectorsRun > 0 && result.detectorsFailed.length === result.detectorsRun;
+  if (allDetectorsFailed) {
+    logger.warn({ vodId: vod.vodId, detectorsFailed: result.detectorsFailed }, 'pipeline.allDetectorsFailed');
+  }
+
+  if (!pipelineError && !allDetectorsFailed) {
     await mkdir(STATE_DIR, { recursive: true });
     const state = await loadJson(STATE_FILE, { processed: [] });
     const processedSet = new Set(state.processed);
@@ -263,14 +289,16 @@ export async function runPipeline(eventPayload) {
 
   const summary = pipelineError
     ? `**Vodminer auto-clip FAILED (VOD ${vod.vodId})**\n${pipelineError.message}\nVOD not marked processed; will retry on next trigger.`
-    : `**Vodminer auto-clip complete (VOD ${vod.vodId})**${gameName ? `  —  ${gameName}` : ''}\n` +
-      `TikTok drafts sent: ${tiktokDrafts}\n` +
-      `Highlights detected: ${rendered}\n` +
-      (skipTwitch
-        ? `Twitch upload: skipped (no playwright profile)\n`
-        : `Twitch clips published: ${published}${failed > 0 ? `  (${failed} failed)` : ''}\n`) +
-      (result?.detectorsFailed?.length ? `⚠️ Detectors failed: ${result.detectorsFailed.join(', ')}\n` : '') +
-      `Manifest: \`clips/highlights-manifest.json\``;
+    : allDetectorsFailed
+      ? `**Vodminer auto-clip FAILED (VOD ${vod.vodId})**\nAll detectors failed: ${result.detectorsFailed.join(', ')}\nVOD not marked processed; will retry on next trigger.`
+      : `**Vodminer auto-clip complete (VOD ${vod.vodId})**${gameName ? `  —  ${gameName}` : ''}\n` +
+        `TikTok drafts sent: ${tiktokDrafts}\n` +
+        `Highlights detected: ${rendered}\n` +
+        (skipTwitch
+          ? `Twitch upload: skipped (no playwright profile)\n`
+          : `Twitch clips published: ${published}${failed > 0 ? `  (${failed} failed)` : ''}\n`) +
+        (result?.detectorsFailed?.length ? `⚠️ Detectors failed: ${result.detectorsFailed.join(', ')}\n` : '') +
+        `Manifest: \`clips/highlights-manifest.json\``;
 
   try {
     await reviewBot.sendSummary(summary);
@@ -278,8 +306,9 @@ export async function runPipeline(eventPayload) {
     logger.warn({ err: err?.message }, 'pipeline.summaryFailed');
   }
 
-  if (pipelineError) {
-    return { vod, highlights: [], clips: [], rendered: 0, published: 0, failed: 0, error: pipelineError.message };
+  if (pipelineError || allDetectorsFailed) {
+    const error = pipelineError ? pipelineError.message : `all detectors failed: ${result.detectorsFailed.join(', ')}`;
+    return { vod, highlights: [], clips: [], rendered: 0, published: 0, failed: 0, error };
   }
   return { vod, highlights: result.highlights, clips: result.clips, rendered, published, failed };
 }
