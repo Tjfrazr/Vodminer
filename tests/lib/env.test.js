@@ -1,5 +1,13 @@
 import { jest } from '@jest/globals';
 
+// src/lib/env.js does `import 'dotenv/config'`, which reads the real .env
+// file from disk on every fresh import. On a machine with a real .env (this
+// one), that silently repopulates every var this test just deleted from
+// process.env — the test's pass/fail then depends on whether a real .env
+// happens to exist, not on env.js's own logic. Mock it to a no-op so the
+// test is hermetic regardless of what's on disk.
+jest.unstable_mockModule('dotenv/config', () => ({}));
+
 const REQUIRED = [
   'TWITCH_CLIENT_ID',
   'TWITCH_CLIENT_SECRET',
