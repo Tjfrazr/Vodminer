@@ -167,3 +167,29 @@ ceiling and no failure signal, ever. `motion` already has this guard
 (`detector.motion.timeoutMs`, and it fired correctly this run). Same
 class as the H1/H2 fix already applied to motion in Phase 1 — apply the
 same guard to audioTransient.
+
+## RESOLVED 2026-07-06 (commits 5487e20, 0505aeb) — detection fixed & verified
+
+The reprocess above came back "complete, 0 highlights" — investigated and
+fixed. Root causes:
+1. `yt-dlp -o -` stages HLS fragments as `--FragN` CWD temp files; a Windows
+   read-back race killed the 270MB audio download at 79% (run 2) and 99.8%
+   (run 1). Fixed: new `src/lib/streamUrl.js` resolves the m3u8 via
+   `yt-dlp -g`; ffmpeg reads HLS directly. ~21x realtime now (audio pass 69s).
+2. `motion` NEVER worked on Windows: the absolute temp path in
+   `metadata=print:file=` broke the filtergraph parse instantly; the pipe's
+   settle logic masked it as the 30-min "timeout". Fixed: spawn ffmpeg with
+   cwd = temp dir + bare relative filename. Full 3h VOD scans in ~8 min.
+3. `reprocess-vod.js` reported all-detectors-failed as "complete" — now
+   reports FAILED (exit 1) and posts live per-detector progress pings.
+Also done: audio wall-clock timeout added (`detector.audioTimeoutMs`) —
+closes the "known remaining gap" flagged above.
+
+**Verified live:** reprocess 2813242741 → 20 highlights, 20 Twitch clips
+published, 20 TikTok drafts, 0 failures. Standalone full-VOD motion run:
+238 scene events → 20 highlights in 470s (detection only, not published).
+
+Still open: env.test.js 2 pre-existing failures; `--Frag2.part` orphan in
+repo root awaiting delete-confirmation; motion sceneThreshold tuning (now
+has real data — many events saturate at sceneScore 1.0); server restart to
+pick up startup catch-up wiring + progress pings.
