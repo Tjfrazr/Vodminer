@@ -17,6 +17,9 @@ export const detector = {
   preRollSec: 10,
   postRollSec: 5,
   maxHighlightsPerVod: 20,
+  // Wall-clock kill switch for the audio extract (same guard class as
+  // motion.timeoutMs) — a stalled HLS read must fail loudly, never hang.
+  audioTimeoutMs: 30 * 60 * 1000,
   // Motion/scene detector (ffmpeg-native). Tuning knobs — the physical stream
   // varies (game, resolution), so leave these adjustable rather than hardcoded.
   motion: {

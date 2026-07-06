@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { logger } from '../lib/logger.js';
+import { resolveStreamUrl } from '../lib/streamUrl.js';
 import { detector as detectorCfg, video as videoCfg } from '../../config.js';
 
 const M = detectorCfg.motion;
@@ -62,39 +63,34 @@ export function buildMotionHighlight(group, vod) {
   };
 }
 
-// Stream the lowest-res video through ffmpeg scene detection. Comma inside
-// gt(scene,N) MUST be backslash-escaped when passed via spawn (no shell) or
-// ffmpeg splits the filtergraph on it. Verified empirically.
-const STDERR_CAP = 10000; // keep only the last chunk of stderr; yt-dlp spews progress
+// ffmpeg reads the HLS manifest directly (see resolveStreamUrl for why we
+// don't pipe yt-dlp's downloader). Comma inside gt(scene,N) MUST be
+// backslash-escaped when passed via spawn (no shell) or ffmpeg splits the
+// filtergraph on it. Verified empirically.
+const STDERR_CAP = 10000;
 
-function runSceneDetect(vodUrl, metaPath) {
+async function runSceneDetect(vodUrl, metaPath) {
+  const streamUrl = await resolveStreamUrl(vodUrl, M.ytFormat);
   return new Promise((resolve, reject) => {
-    const yt = spawn('yt-dlp', ['-f', M.ytFormat, '--no-warnings', '-o', '-', vodUrl]);
+    // An absolute Windows path in a filter option can't be expressed reliably —
+    // the drive `:` and `\` are filtergraph syntax and escaping doesn't survive
+    // the two-level parse. Run ffmpeg from the temp dir and pass a bare
+    // relative filename instead: nothing to escape.
     const ff = spawn('ffmpeg', [
       '-hide_banner', '-loglevel', 'error',
-      '-i', 'pipe:0',
+      '-i', streamUrl,
       '-an',
-      '-vf', `fps=${M.fps},scale=${M.scaleWidth}:-1,select=gt(scene\\,${M.sceneThreshold}),metadata=print:file=${metaPath}`,
+      '-vf', `fps=${M.fps},scale=${M.scaleWidth}:-1,select=gt(scene\\,${M.sceneThreshold}),metadata=print:file=${path.basename(metaPath)}`,
       '-f', 'null', '-',
-    ]);
+    ], { cwd: path.dirname(metaPath) });
 
-    yt.stdout.pipe(ff.stdin);
-    ff.stdin.on('error', () => {});
-
-    let ytErr = '';
     let ffErr = '';
-    let ytExit = null;
-    let ffExit = null;
     let settled = false;
 
-    // Guaranteed single-settle: kill BOTH children (a live/stalled yt-dlp never
-    // EOFs, and a dead ffmpeg won't reliably take yt-dlp down via EPIPE), clear
-    // the timeout, then resolve/reject exactly once.
     function finish(err) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      yt.kill('SIGKILL');
       ff.kill('SIGKILL');
       if (err) reject(err); else resolve();
     }
@@ -106,20 +102,13 @@ function runSceneDetect(vodUrl, metaPath) {
       M.timeoutMs,
     );
 
-    yt.stderr.on('data', (d) => { if (ytErr.length < STDERR_CAP) ytErr += d.toString(); });
     ff.stderr.on('data', (d) => { if (ffErr.length < STDERR_CAP) ffErr += d.toString(); });
 
-    function settle() {
-      if (ytExit === null || ffExit === null) return;
-      if (ffExit !== 0) return finish(new Error(`ffmpeg exit ${ffExit}: ${ffErr.slice(-500)}`));
-      if (ytExit !== 0) return finish(new Error(`yt-dlp exit ${ytExit}: ${ytErr.slice(-500)}`));
-      finish();
-    }
-
-    yt.on('error', finish);
     ff.on('error', finish);
-    yt.on('close', (c) => { ytExit = c ?? 0; settle(); });
-    ff.on('close', (c) => { ffExit = c ?? 0; settle(); });
+    ff.on('close', (c) => {
+      if ((c ?? 0) !== 0) return finish(new Error(`ffmpeg exit ${c}: ${ffErr.slice(-500)}`));
+      finish();
+    });
   });
 }
 

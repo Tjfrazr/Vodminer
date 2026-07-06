@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { logger } from '../lib/logger.js';
+import { resolveStreamUrl } from '../lib/streamUrl.js';
 import { detector as cfg, video as videoCfg } from '../../config.js';
 
 const BYTES_PER_SAMPLE = 2;
@@ -49,20 +50,18 @@ export default async function detectClips(vod) {
   return highlights;
 }
 
-function extractRmsWindows(vodUrl) {
+// ffmpeg reads the HLS manifest directly (see resolveStreamUrl for why we
+// don't pipe yt-dlp's downloader). Wall-clock ceiling so a network stall or a
+// still-live VOD can't hang the pipeline forever — same guard as motion.
+async function extractRmsWindows(vodUrl) {
+  const streamUrl = await resolveStreamUrl(vodUrl, 'bestaudio');
   return new Promise((resolve, reject) => {
     const samplesPerWindow = cfg.audioSampleRate * cfg.windowSec;
     const bytesPerWindow = samplesPerWindow * BYTES_PER_SAMPLE;
 
-    const yt = spawn('yt-dlp', [
-      '-f', 'bestaudio',
-      '--no-warnings',
-      '-o', '-',
-      vodUrl,
-    ]);
     const ff = spawn('ffmpeg', [
       '-hide_banner', '-loglevel', 'error',
-      '-i', 'pipe:0',
+      '-i', streamUrl,
       '-vn',
       '-ac', '1',
       '-ar', String(cfg.audioSampleRate),
@@ -70,17 +69,24 @@ function extractRmsWindows(vodUrl) {
       '-',
     ]);
 
-    yt.stdout.pipe(ff.stdin);
-    ff.stdin.on('error', () => {});
-
     const windows = [];
     let buf = Buffer.alloc(0);
-    let ytStderr = '';
     let ffStderr = '';
-    let ytExit = null;
-    let ffExit = null;
+    let settled = false;
 
-    yt.stderr.on('data', (d) => { ytStderr += d.toString(); });
+    function finish(err) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      ff.kill('SIGKILL');
+      if (err) reject(err); else resolve(windows);
+    }
+
+    const timer = setTimeout(
+      () => finish(new Error(`audio extract timed out after ${cfg.audioTimeoutMs}ms`)),
+      cfg.audioTimeoutMs,
+    );
+
     ff.stderr.on('data', (d) => { ffStderr += d.toString(); });
 
     ff.stdout.on('data', (chunk) => {
@@ -91,21 +97,11 @@ function extractRmsWindows(vodUrl) {
       }
     });
 
-    function settle() {
-      if (ytExit === null || ffExit === null) return;
-      if (ffExit !== 0) {
-        return reject(new Error(`ffmpeg exit ${ffExit}: ${ffStderr.slice(-500)}`));
-      }
-      if (ytExit !== 0) {
-        return reject(new Error(`yt-dlp exit ${ytExit}: ${ytStderr.slice(-500)}`));
-      }
-      resolve(windows);
-    }
-
-    yt.on('error', reject);
-    ff.on('error', reject);
-    yt.on('close', (code) => { ytExit = code ?? 0; settle(); });
-    ff.on('close', (code) => { ffExit = code ?? 0; settle(); });
+    ff.on('error', finish);
+    ff.on('close', (code) => {
+      if ((code ?? 0) !== 0) return finish(new Error(`ffmpeg exit ${code}: ${ffStderr.slice(-500)}`));
+      finish();
+    });
   });
 }
 

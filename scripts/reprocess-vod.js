@@ -73,8 +73,20 @@ async function run() {
   let failed = 0;
   let tiktokDrafts = 0;
 
-  await processVod(vod, {
+  const onDetectorProgress = async ({ name, phase, count, tookMs, error }) => {
+    const sec = tookMs != null ? (tookMs / 1000).toFixed(1) : null;
+    const msg =
+      phase === 'start'
+        ? `🔎 Running detector: \`${name}\`...`
+        : phase === 'done'
+          ? `✅ \`${name}\`: ${count} highlight${count === 1 ? '' : 's'} (${sec}s)`
+          : `⚠️ \`${name}\` failed after ${sec}s: ${error}`;
+    await reviewBot.sendSummary(msg).catch((err) => logger.warn({ err: err?.message }, 'reprocess-vod: progress notify failed'));
+  };
+
+  const result = await processVod(vod, {
     gameName,
+    onDetectorProgress,
     onClip: async (clip) => {
       rendered += 1;
       let twitchResult = null;
@@ -141,16 +153,26 @@ async function run() {
 
   if (!skipTwitch) await closePlaywright().catch(() => {});
 
-  const summary =
-    `**Vodminer reprocess complete (VOD ${vodId})**  —  ${gameName ?? 'unknown'}\n` +
-    `Highlights: ${rendered}  |  TikTok drafts: ${tiktokDrafts}\n` +
-    (skipTwitch
-      ? `Twitch upload: skipped (no playwright profile)`
-      : `Twitch clips published: ${published}${failed > 0 ? `  (${failed} failed)` : ''}`);
+  // "0 highlights because every detector crashed" is a failure, not a result —
+  // report it as one (same rule runPipeline applies).
+  const allDetectorsFailed = result.detectorsRun > 0 && result.detectorsFailed.length === result.detectorsRun;
+
+  const summary = allDetectorsFailed
+    ? `**Vodminer reprocess FAILED (VOD ${vodId})**  —  ${gameName ?? 'unknown'}\n` +
+      `All detectors failed: ${result.detectorsFailed.join(', ')}`
+    : `**Vodminer reprocess complete (VOD ${vodId})**  —  ${gameName ?? 'unknown'}\n` +
+      `Highlights: ${rendered}  |  TikTok drafts: ${tiktokDrafts}\n` +
+      (skipTwitch
+        ? `Twitch upload: skipped (no playwright profile)`
+        : `Twitch clips published: ${published}${failed > 0 ? `  (${failed} failed)` : ''}`) +
+      (result.detectorsFailed.length ? `\n⚠️ Detectors failed: ${result.detectorsFailed.join(', ')}` : '');
 
   await reviewBot.sendSummary(summary).catch(() => {});
-  logger.info({ vodId, rendered, published, failed, tiktokDrafts }, 'reprocess-vod: done');
-  process.exit(0);
+  logger.info(
+    { vodId, rendered, published, failed, tiktokDrafts, detectorsFailed: result.detectorsFailed },
+    'reprocess-vod: done',
+  );
+  process.exit(allDetectorsFailed ? 1 : 0);
 }
 
 run().catch((err) => {
