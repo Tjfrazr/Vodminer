@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import ffmpeg from 'fluent-ffmpeg';
 import { logger } from '../lib/logger.js';
+import { editing } from '../../config.js';
 
 // Cuts dead air (silence) from a video. This project has no mic/commentary
 // track, so the usual "cut where nobody's talking" tool (auto-editor, a
@@ -15,9 +16,9 @@ import { logger } from '../lib/logger.js';
 // new dependencies — this reimplements the same "keep the non-silent parts"
 // idea directly in ffmpeg.
 
-const SILENCE_NOISE_DB = '-30dB';
-const SILENCE_MIN_DURATION_SEC = 1.0;
-const KEEP_PAD_SEC = 0.3; // don't cut flush against the silence boundary — leaves a little breathing room
+const SILENCE_NOISE_DB = editing.silence.noiseDb;
+const SILENCE_MIN_DURATION_SEC = editing.silence.minDurationSec;
+const KEEP_PAD_SEC = editing.silence.keepPadSec; // don't cut flush against the silence boundary — leaves a little breathing room
 const DETECT_TIMEOUT_MS = 30 * 60 * 1000; // batch job, not real-time — generous ceiling, not a real expectation
 // Scales with input duration (floor 10 min) rather than a flat constant —
 // this is a safety net on top of the stream-copy approach below, which

@@ -13,6 +13,7 @@ import { mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { env } from '../src/lib/env.js';
 import { logger } from '../src/lib/logger.js';
+import { resolveStreamUrl } from '../src/lib/streamUrl.js';
 import { getAllVods, getVodGameName } from '../src/twitch/vodFetcher.js';
 import { runDetectors } from '../src/detectors/index.js';
 import { mergeHighlights } from '../src/detectors/merge.js';
@@ -37,34 +38,43 @@ function fmtDate(isoOrDate) {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-// Direct-to-file download — NOT the `-o -` stdout pipe mode that caused the
-// --FragN crash fixed earlier this session. Standard yt-dlp file-download
-// behavior, same as the already-verified downloadVodSegment.
+// Reads the HLS stream directly via ffmpeg (resolveStreamUrl + `-c copy`),
+// the same pattern already proven reliable twice this session for the audio
+// and motion detectors (270MB in 69s; a full 8GB video scan in ~8min).
+// yt-dlp's own downloader was tried here first and stalled at 618MB with
+// all three connections stuck in CloseWait, never recovering — a second,
+// distinct reliability failure from the earlier `-o -` pipe crash. Direct
+// ffmpeg reads have been reliable every time they've been used in this
+// codebase; yt-dlp's own downloader has now failed twice.
 function downloadFullVod(vodUrl, outPath, { timeoutMs = 4 * 60 * 60 * 1000 } = {}) {
   return new Promise((resolve, reject) => {
-    const yt = spawn('yt-dlp', ['-f', 'best', '--no-warnings', '-o', outPath, vodUrl]);
-    let stderr = '';
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      yt.kill('SIGKILL');
-      reject(new Error(`full VOD download timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
-    yt.stderr.on('data', (d) => { stderr += d.toString(); });
-    yt.on('error', (err) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      reject(err);
-    });
-    yt.on('close', (code) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (code === 0) resolve();
-      else reject(new Error(`yt-dlp exited ${code}: ${stderr.slice(-500)}`));
-    });
+    resolveStreamUrl(vodUrl, 'best')
+      .then((streamUrl) => {
+        const ff = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-i', streamUrl, '-c', 'copy', outPath]);
+        let stderr = '';
+        let settled = false;
+        const timer = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          ff.kill('SIGKILL');
+          reject(new Error(`full VOD download timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+        ff.stderr.on('data', (d) => { stderr += d.toString(); });
+        ff.on('error', (err) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          reject(err);
+        });
+        ff.on('close', (code) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          if (code === 0) resolve();
+          else reject(new Error(`ffmpeg exit ${code}: ${stderr.slice(-500)}`));
+        });
+      })
+      .catch(reject);
   });
 }
 

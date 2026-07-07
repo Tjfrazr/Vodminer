@@ -37,4 +37,16 @@ export const detector = {
   },
 };
 
-export default { video, detector };
+export const editing = {
+  // Silence/dead-air trimming (src/processing/silenceTrim.js). Unvalidated
+  // against real racing-game audio (engine idle, garage/menu navigation,
+  // quiet cinematics) — worth a tuning pass once there's real footage to
+  // judge against, same as detector.motion.sceneThreshold.
+  silence: {
+    noiseDb: '-30dB',
+    minDurationSec: 1.0,
+    keepPadSec: 0.3, // breathing room left on each side of a cut
+  },
+};
+
+export default { video, detector, editing };
