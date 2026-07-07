@@ -9,6 +9,7 @@ import { logger } from '../src/lib/logger.js';
 import { processVod } from '../src/pipeline.js';
 import reviewBot from '../src/discord/reviewBot.js';
 import { publishClip, closeContext as closePlaywright } from '../src/twitch/clipPublisher.js';
+import { buildPreviewClip } from '../src/processing/previewClip.js';
 import { detector as detectorCfg } from '../config.js';
 
 const vodId = process.argv[2];
@@ -138,16 +139,25 @@ async function run() {
       manifestSet.add(key);
       await saveJson(MANIFEST_FILE, manifest);
 
-      await reviewBot.sendClipRating({
-        clipId: clip.id,
-        gameName,
-        startSec: clip.startSec,
-        score: clip.score,
-        reason: clip.reason,
-        viewerClipTitle: clip.viewerClipTitle,
-        twitchClipUrl: twitchResult?.clipUrl ?? null,
-        vodId,
-      }).catch((err) => logger.warn({ err: err?.message }, 'reprocess-vod: sendClipRating failed'));
+      const preview = await buildPreviewClip(vodId, clip.startSec, clip.endSec).catch((err) => {
+        logger.warn({ err: err?.message, clipId: clip.id }, 'reprocess-vod: previewClip failed');
+        return null;
+      });
+      try {
+        await reviewBot.sendClipRating({
+          clipId: clip.id,
+          gameName,
+          startSec: clip.startSec,
+          score: clip.score,
+          reason: clip.reason,
+          viewerClipTitle: clip.viewerClipTitle,
+          twitchClipUrl: twitchResult?.clipUrl ?? null,
+          vodId,
+          filePath: preview?.filePath ?? null,
+        }).catch((err) => logger.warn({ err: err?.message }, 'reprocess-vod: sendClipRating failed'));
+      } finally {
+        await preview?.cleanup();
+      }
     },
   });
 

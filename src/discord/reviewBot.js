@@ -383,7 +383,7 @@ async function sendSummary(text) {
   return msg.url;
 }
 
-async function sendClipRating({ clipId, gameName, startSec, score, reason, viewerClipTitle, twitchClipUrl, vodId }) {
+async function sendClipRating({ clipId, gameName, startSec, score, reason, viewerClipTitle, twitchClipUrl, vodId, filePath }) {
   if (!ready || !channel) throw new Error('reviewBot not started — call start() first');
 
   const rows = [
@@ -412,7 +412,21 @@ async function sendClipRating({ clipId, gameName, startSec, score, reason, viewe
     new ButtonBuilder().setCustomId(`approve_${clipId}`).setLabel('✅ Approve + TikTok').setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId(`disapprove_${clipId}`).setLabel('❌ Disapprove').setStyle(ButtonStyle.Danger),
   );
-  await channel.send({ content, components: [...rows, actionRow] });
+
+  const payload = { content, components: [...rows, actionRow] };
+  if (filePath) {
+    try {
+      const s = await stat(filePath);
+      if (s.size > 0 && s.size <= DISCORD_FREE_ATTACHMENT_LIMIT) {
+        payload.files = [new AttachmentBuilder(filePath)];
+      } else {
+        logger.warn({ clipId, size: s.size }, 'discord: preview clip too large to attach, sending link-only');
+      }
+    } catch (err) {
+      logger.warn({ err: err?.message, clipId, filePath }, 'discord: preview stat failed, sending link-only');
+    }
+  }
+  await channel.send(payload);
 }
 
 async function askGameName(vodId, suggestedGame, timeoutMs = 120000) {

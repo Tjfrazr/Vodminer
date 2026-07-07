@@ -193,7 +193,7 @@ export async function getViewerClipsForVod(broadcasterId, vodId, { maxPages = 5 
   return [...clipsById.values()];
 }
 
-export async function downloadVodSegment(vodId, startSec, endSec, outPath) {
+export async function downloadVodSegment(vodId, startSec, endSec, outPath, { timeoutMs = 5 * 60 * 1000 } = {}) {
   if (!Number.isFinite(startSec) || !Number.isFinite(endSec) || endSec <= startSec) {
     throw new Error(`invalid segment range: ${startSec}-${endSec}`);
   }
@@ -223,12 +223,27 @@ export async function downloadVodSegment(vodId, startSec, endSec, outPath) {
     }
 
     let stderr = '';
+    let settled = false;
+
+    // Wall-clock ceiling — a short segment download should never take this long;
+    // without it a stalled network/pipe hangs the caller forever (same guard
+    // class as the detectors' timeouts fixed elsewhere this session).
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.kill('SIGKILL');
+      reject(new Error(`yt-dlp segment download timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+
     child.stdout.on('data', (d) => logger.debug({ ytdlp: d.toString().trim() }));
     child.stderr.on('data', (d) => {
       stderr += d.toString();
     });
 
     child.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
       if (err.code === 'ENOENT') {
         reject(
           new Error(
@@ -241,6 +256,9 @@ export async function downloadVodSegment(vodId, startSec, endSec, outPath) {
     });
 
     child.on('close', (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
       if (code === 0) {
         resolve(outPath);
         return;

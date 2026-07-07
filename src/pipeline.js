@@ -7,6 +7,7 @@ import { runDetectors } from './detectors/index.js';
 import { mergeHighlights } from './detectors/merge.js';
 import reviewBot from './discord/reviewBot.js';
 import { publishClip, closeContext as closePlaywright } from './twitch/clipPublisher.js';
+import { buildPreviewClip } from './processing/previewClip.js';
 
 reviewBot.onApprove(async ({ clipId, vodId, startSec, endSec, gameName }) => {
   const title = buildClipTitle(gameName, startSec);
@@ -249,16 +250,25 @@ export async function runPipeline(eventPayload) {
           await saveJson(MANIFEST_FILE, manifest);
         }
 
-        await reviewBot.sendClipRating({
-          clipId: clip.id,
-          gameName: clip.gameName,
-          startSec: clip.startSec,
-          score: clip.score,
-          reason: clip.reason,
-          viewerClipTitle: clip.viewerClipTitle,
-          twitchClipUrl: twitchResult?.clipUrl ?? null,
-          vodId: vod.vodId,
-        }).catch((err) => logger.warn({ err: err?.message }, 'pipeline.ratingMessageFailed'));
+        const preview = await buildPreviewClip(vod.vodId, clip.startSec, clip.endSec).catch((err) => {
+          logger.warn({ err: err?.message, clipId: clip.id }, 'pipeline.previewClipFailed');
+          return null;
+        });
+        try {
+          await reviewBot.sendClipRating({
+            clipId: clip.id,
+            gameName: clip.gameName,
+            startSec: clip.startSec,
+            score: clip.score,
+            reason: clip.reason,
+            viewerClipTitle: clip.viewerClipTitle,
+            twitchClipUrl: twitchResult?.clipUrl ?? null,
+            vodId: vod.vodId,
+            filePath: preview?.filePath ?? null,
+          }).catch((err) => logger.warn({ err: err?.message }, 'pipeline.ratingMessageFailed'));
+        } finally {
+          await preview?.cleanup();
+        }
       },
     });
   } catch (err) {
