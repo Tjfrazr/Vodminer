@@ -335,6 +335,23 @@ async function start() {
   return startPromise;
 }
 
+// Discord's real per-guild attachment cap doesn't always match our local
+// DISCORD_FREE_ATTACHMENT_LIMIT estimate (boost tier, CDN-side limits, etc.),
+// so a file that passes our size check can still get rejected with
+// "Request entity too large". Rather than losing the whole review message
+// (and the clip becoming unreviewable), retry once without the attachment.
+async function sendWithAttachmentFallback(payload, logCtx) {
+  try {
+    return await channel.send(payload);
+  } catch (err) {
+    if (!payload.files) throw err;
+    logger.warn({ err: err?.message, ...logCtx }, 'discord: attachment send failed, retrying without file');
+    const { files, ...rest } = payload;
+    const note = `-# (clip file could not be attached: ${err?.message ?? 'unknown error'})`;
+    return channel.send({ ...rest, content: rest.content ? `${rest.content}\n${note}` : note });
+  }
+}
+
 async function sendPreview(clip) {
   if (!ready || !channel) {
     throw new Error('reviewBot not started — call start() first');
@@ -366,7 +383,7 @@ async function sendPreview(clip) {
     payload.content = `clip too large to attach (${reason}): ${clip.filePath}`;
   }
 
-  const message = await channel.send(payload);
+  const message = await sendWithAttachmentFallback(payload, { clipId: clip.id });
 
   return {
     clipId: clip.id,
@@ -426,7 +443,7 @@ async function sendClipRating({ clipId, gameName, startSec, score, reason, viewe
       logger.warn({ err: err?.message, clipId, filePath }, 'discord: preview stat failed, sending link-only');
     }
   }
-  await channel.send(payload);
+  await sendWithAttachmentFallback(payload, { clipId });
 }
 
 async function askGameName(vodId, suggestedGame, timeoutMs = 120000) {
