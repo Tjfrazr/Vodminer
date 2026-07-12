@@ -2,7 +2,6 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { env } from '../lib/env.js';
 import { logger } from '../lib/logger.js';
 import { resolveStreamUrl } from '../lib/streamUrl.js';
 import { detector as detectorCfg } from '../../config.js';
@@ -14,12 +13,22 @@ const CF = detectorCfg.combatFilter;
 // the same amplitude spike (real false positive: God of War VOD, "Poor, I was
 // just in the menu", rated 1/10). No threshold tune fixes a semantic problem,
 // so for action/fighting games this filter samples a few frames from each
-// merged candidate and asks a multimodal Claude model "active combat or not?",
-// dropping the not's BEFORE the expensive preview render + Discord post.
+// merged candidate and asks a local vision model (via Ollama — no API key,
+// nothing leaves the machine) whether the player is actively fighting,
+// dropping the no's BEFORE the expensive preview render + Discord post.
+//
+// Prompt note: an early version asked for a COMBAT/SKIP verdict against a
+// list of negative examples (menus, cutscenes, exploration, ...) and every
+// model tested (moondream, llava:13b, gemma3:4b) answered COMBAT on
+// literally everything, including an unambiguous weapons-menu screenshot —
+// small vision models handle negation-heavy category lists badly. Asking
+// the same models a single direct yes/no question ("is the player mid-fight
+// right now") classified correctly on every manually-reviewed test frame.
+// Keep the prompt simple; don't reintroduce a category list.
 //
 // Fail-open by design: a filter mistake must cost an extra Discord review, not
-// a lost highlight. Any error (no API key, yt-dlp/ffmpeg failure, API error,
-// ambiguous reply) keeps the candidate.
+// a lost highlight. Any error (Ollama unreachable, ffmpeg failure, ambiguous
+// reply) keeps the candidate.
 
 // gameName-keyed genre gate. Case-insensitive substring match so "God of War",
 // "God of War Ragnarök", "ELDEN RING NIGHTREIGN" etc. all hit without needing
@@ -32,25 +41,21 @@ export function isActionGame(gameName, keywords = CF.actionGameKeywords) {
 }
 
 // Model replies are instructed to be a single word, but parse defensively:
-// only an unambiguous SKIP drops a clip; anything else (including garbage or a
-// reply containing both words) returns null → caller keeps the clip.
+// only an unambiguous YES/NO drops or keeps; anything else (garbage, a reply
+// containing both words, empty) returns null → caller keeps the clip.
 export function parseVerdict(text) {
   const t = String(text ?? '').toUpperCase();
-  const combat = /\bCOMBAT\b/.test(t);
-  const skip = /\bSKIP\b/.test(t);
-  if (combat && !skip) return true;
-  if (skip && !combat) return false;
+  const yes = /\bYES\b/.test(t);
+  const no = /\bNO\b/.test(t);
+  if (yes && !no) return true;
+  if (no && !yes) return false;
   return null;
 }
 
-const SYSTEM_PROMPT =
-  'You classify video-game footage for an automated Twitch highlight-clipping pipeline. ' +
-  'You are shown a few frames sampled from ONE candidate clip of a gameplay VOD. ' +
-  'Decide whether the frames show active combat/fighting gameplay: the player attacking or being attacked, ' +
-  'enemies engaged, boss fights, action set-pieces mid-fight. ' +
-  'Everything else is NOT combat: menus, inventory or skill-tree screens, map screens, loading screens, ' +
-  'shops, crafting, dialogue or cutscenes, idle exploration or walking with no enemies engaged. ' +
-  'Reply with exactly one word: COMBAT if at least one frame clearly shows active combat gameplay, otherwise SKIP.';
+const PROMPT =
+  'Look at this video game screenshot. Is the player character currently mid-fight, ' +
+  'actively attacking or being attacked by an enemy right now in this exact frame? ' +
+  'Answer with just YES or NO.';
 
 // Grab a single downscaled JPEG frame from the HLS stream at timeSec.
 // Input-side -ss makes ffmpeg fetch only the segments around the seek point,
@@ -104,41 +109,33 @@ export function frameTimes(startSec, endSec, count = CF.framesPerHighlight) {
   return times;
 }
 
-let anthropicClient = null;
-async function getClient() {
-  if (!anthropicClient) {
-    const { default: Anthropic } = await import('@anthropic-ai/sdk');
-    anthropicClient = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
+// One frame in, one verdict out. Classified independently per-frame (not as
+// a batch) — that's the exact shape validated against real VOD frames.
+async function classifyFrame(frameBase64, { fetchImpl = fetch } = {}) {
+  const res = await fetchImpl(`${CF.ollamaHost}/api/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: CF.model,
+      prompt: PROMPT,
+      images: [frameBase64],
+      stream: false,
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`ollama ${res.status}: ${(await res.text()).slice(0, 300)}`);
   }
-  return anthropicClient;
-}
-
-async function classifyFrames(framesBase64, { gameName, highlight }) {
-  const client = await getClient();
-  const content = framesBase64.map((data) => ({
-    type: 'image',
-    source: { type: 'base64', media_type: 'image/jpeg', data },
-  }));
-  content.push({
-    type: 'text',
-    text:
-      `Game: ${gameName}. These ${framesBase64.length} frames were sampled across one ` +
-      `${highlight.endSec - highlight.startSec}s candidate highlight. COMBAT or SKIP?`,
-  });
-  const res = await client.messages.create({
-    model: CF.model,
-    max_tokens: CF.maxTokens,
-    system: SYSTEM_PROMPT,
-    messages: [{ role: 'user', content }],
-  });
-  const text = res.content.find((b) => b.type === 'text')?.text ?? '';
-  return parseVerdict(text);
+  const data = await res.json();
+  return parseVerdict(data.response);
 }
 
 // Default per-highlight classifier: resolve the VOD's HLS URL once (lazily, on
-// first classified highlight), extract frames into a temp dir, ask Claude.
+// first classified highlight), extract frames into a temp dir, ask the local
+// model. A highlight counts as combat if ANY sampled frame says YES — a real
+// fight only needs one frame to catch it, and this stays on the
+// conservative/keep-it side of the fail-open design.
 // Returns true (combat) / false (not combat) / null (couldn't tell — keep).
-function createFrameClassifier(vod, gameName) {
+function createFrameClassifier(vod) {
   let streamUrlPromise = null;
   return async function classify(highlight) {
     streamUrlPromise ??= resolveStreamUrl(vod.url, CF.ytFormat);
@@ -146,13 +143,18 @@ function createFrameClassifier(vod, gameName) {
     const dir = await mkdtemp(path.join(tmpdir(), 'vodminer-combat-'));
     try {
       const times = frameTimes(highlight.startSec, highlight.endSec);
-      const frames = [];
+      let sawYes = false;
+      let sawAnyVerdict = false;
       for (const [i, t] of times.entries()) {
         const framePath = path.join(dir, `frame-${i}.jpg`);
         await extractFrame(streamUrl, t, framePath);
-        frames.push((await readFile(framePath)).toString('base64'));
+        const frameBase64 = (await readFile(framePath)).toString('base64');
+        const verdict = await classifyFrame(frameBase64);
+        if (verdict !== null) sawAnyVerdict = true;
+        if (verdict === true) { sawYes = true; break; }
       }
-      return await classifyFrames(frames, { gameName, highlight });
+      if (!sawAnyVerdict) return null;
+      return sawYes;
     } finally {
       await rm(dir, { recursive: true, force: true }).catch(() => {});
     }
@@ -162,33 +164,24 @@ function createFrameClassifier(vod, gameName) {
 /**
  * Filter merged highlights down to ones showing actual combat, for action
  * games only. Runs AFTER mergeHighlights (so at most maxHighlightsPerVod
- * classifications, ~20 API calls worst case) and BEFORE preview render /
- * Discord post.
+ * classifications) and BEFORE preview render / Discord post.
  *
  * Pass-through (returns input unchanged) when: filter disabled, gameName
- * doesn't match an action-game keyword, no ANTHROPIC_API_KEY, or the stream
- * URL can't be resolved. Per-highlight errors keep that highlight (fail open).
- * Viewer clips are never filtered — a human already decided they were worth
- * clipping.
+ * doesn't match an action-game keyword, or Ollama isn't reachable. Per-highlight
+ * errors keep that highlight (fail open). Viewer clips are never filtered — a
+ * human already decided they were worth clipping.
  *
- * `classify` and `apiKey` are injectable for tests.
+ * `classify` is injectable for tests.
  */
-export async function filterCombatHighlights(
-  highlights,
-  { vod, gameName, classify, apiKey = env.ANTHROPIC_API_KEY } = {},
-) {
+export async function filterCombatHighlights(highlights, { vod, gameName, classify } = {}) {
   if (!Array.isArray(highlights) || highlights.length === 0) return highlights ?? [];
   if (!CF.enabled) return highlights;
   if (!isActionGame(gameName)) {
     logger.debug({ vodId: vod?.vodId, gameName }, 'combatFilter.skipped.notActionGame');
     return highlights;
   }
-  if (!apiKey) {
-    logger.warn({ vodId: vod?.vodId, gameName }, 'combatFilter.skipped.noApiKey');
-    return highlights;
-  }
 
-  const classifyFn = classify ?? createFrameClassifier(vod, gameName);
+  const classifyFn = classify ?? createFrameClassifier(vod);
   const kept = [];
   let checked = 0;
   let dropped = 0;

@@ -24,9 +24,6 @@ export const env = Object.freeze({
   PORT: Number(process.env.PORT || 3000),
   LOG_LEVEL: process.env.LOG_LEVEL || 'info',
   SKIP_TIKTOK_DRAFTS: process.env.SKIP_TIKTOK_DRAFTS === 'true',
-  // Optional — enables the vision combat filter (src/detectors/combatFilter.js).
-  // When unset the filter logs a warning and passes all highlights through.
-  ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || null,
 });
 
 export default env;

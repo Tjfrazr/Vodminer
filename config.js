@@ -38,16 +38,23 @@ export const detector = {
   // Vision combat filter (src/detectors/combatFilter.js). The signal detectors
   // above are content-blind — an amplitude spike from a menu click looks the
   // same as a sword clash. For action/fighting games, after mergeHighlights,
-  // sample a few frames from each candidate window and ask Claude whether they
-  // show active combat; drop menu/cutscene/idle candidates before the expensive
-  // preview render + Discord review. No-ops (keeps everything) when
-  // ANTHROPIC_API_KEY is unset, the game doesn't match actionGameKeywords, or
-  // anything in the classify path errors — it must never lose a real highlight
-  // or crash the pipeline.
+  // sample a few frames from each candidate window and ask a local Ollama
+  // vision model whether they show active combat; drop menu/cutscene/idle
+  // candidates before the expensive preview render + Discord review. Runs
+  // fully locally — no API key, no cost, nothing leaves the machine. No-ops
+  // (keeps everything) when Ollama isn't reachable, the game doesn't match
+  // actionGameKeywords, or anything in the classify path errors — it must
+  // never lose a real highlight or crash the pipeline.
   combatFilter: {
     enabled: true,
-    model: 'claude-opus-4-8', // swap for a cheaper model if per-VOD cost matters
-    maxTokens: 100,
+    ollamaHost: 'http://localhost:11434',
+    // gemma3:4b chosen after live testing against real VOD frames: moondream
+    // and llava:13b both answered "combat" on every frame including an
+    // unambiguous weapons-menu screenshot; gemma3:4b correctly discriminated
+    // menu/climbing/puzzle frames from ones with a visible enemy once asked a
+    // direct yes/no question instead of a category list (see combatFilter.js
+    // header comment). `ollama pull gemma3:4b` on the runtime machine first.
+    model: 'gemma3:4b',
     framesPerHighlight: 3, // sampled evenly inside the candidate window
     frameWidth: 640, // downscale before base64 — plenty for "is this combat"
     frameTimeoutMs: 60 * 1000, // per-frame ffmpeg kill switch (same guard class as motion.timeoutMs)

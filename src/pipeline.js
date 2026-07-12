@@ -81,9 +81,10 @@ export async function processVod(vod, { onClip, gameName: passedGameName = null,
   }
   // Content-aware pass: for action/fighting games, drop merged candidates whose
   // sampled frames show menus/cutscenes/idle footage instead of combat (see
-  // detectors/combatFilter.js — no-ops without ANTHROPIC_API_KEY or for
-  // non-action games). Belt-and-suspenders try/catch even though the filter
-  // fails open internally: a filter bug must never kill highlight processing.
+  // detectors/combatFilter.js — runs against a local Ollama model, no-ops if
+  // Ollama isn't reachable or for non-action games). Belt-and-suspenders
+  // try/catch even though the filter fails open internally: a filter bug must
+  // never kill highlight processing.
   let highlights = merged;
   try {
     highlights = await filterCombatHighlights(merged, { vod, gameName });
