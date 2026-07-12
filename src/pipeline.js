@@ -2,7 +2,7 @@ import path from 'node:path';
 import { mkdir, readFile, writeFile, stat } from 'node:fs/promises';
 import { env } from './lib/env.js';
 import { logger } from './lib/logger.js';
-import { getLatestVod, getVodGameName } from './twitch/vodFetcher.js';
+import { getLatestVod, getAllVods, getVodGameName } from './twitch/vodFetcher.js';
 import { runDetectors } from './detectors/index.js';
 import { mergeHighlights } from './detectors/merge.js';
 import reviewBot from './discord/reviewBot.js';
@@ -140,11 +140,23 @@ export async function checkForUnprocessedVod(broadcasterId) {
   return null;
 }
 
+// Unlike checkForUnprocessedVod (latest VOD only), this walks the full VOD
+// history so a backlog of older, never-processed VODs actually gets caught
+// instead of being silently skipped forever once a newer VOD exists.
+export async function getUnprocessedVods(broadcasterId) {
+  const state = await loadJson(STATE_FILE, { processed: [] });
+  const processedSet = new Set(state.processed);
+  const allVods = await getAllVods(broadcasterId);
+  return allVods
+    .filter((v) => !processedSet.has(v.vodId))
+    .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+}
+
 export async function runPipeline(eventPayload) {
   const broadcasterId = eventPayload?.broadcasterId || env.TWITCH_BROADCASTER_ID;
   logger.info({ broadcasterId }, 'pipeline.start');
 
-  const vod = await waitForNewVod(broadcasterId);
+  const vod = eventPayload?.vod ?? (await waitForNewVod(broadcasterId));
   if (!vod) {
     logger.warn({ broadcasterId }, 'pipeline.noNewVod');
     return { vod: null, highlights: [], clips: [], rendered: 0, published: 0, failed: 0 };

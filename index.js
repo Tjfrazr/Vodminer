@@ -5,7 +5,7 @@ import { assertHostReady } from './src/lib/healthcheck.js';
 import { installGlobalHandlers } from './src/lib/alerts.js';
 import { createEventSubRouter } from './src/twitch/eventSub.js';
 import reviewBot from './src/discord/reviewBot.js';
-import { runPipeline, checkForUnprocessedVod } from './src/pipeline.js';
+import { runPipeline, getUnprocessedVods } from './src/pipeline.js';
 
 const app = express();
 
@@ -40,13 +40,15 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 
 async function runStartupCatchup() {
   try {
-    const vod = await checkForUnprocessedVod(env.TWITCH_BROADCASTER_ID);
-    if (!vod) {
+    const vods = await getUnprocessedVods(env.TWITCH_BROADCASTER_ID);
+    if (vods.length === 0) {
       logger.info('startup.catchup.none');
       return;
     }
-    logger.info({ vodId: vod.vodId }, 'startup.catchup.found');
-    await runPipeline({ broadcasterId: env.TWITCH_BROADCASTER_ID });
+    logger.info({ count: vods.length, vodIds: vods.map((v) => v.vodId) }, 'startup.catchup.found');
+    for (const vod of vods) {
+      await runPipeline({ broadcasterId: env.TWITCH_BROADCASTER_ID, vod });
+    }
   } catch (err) {
     logger.warn({ err: err?.message }, 'startup.catchup.failed');
   }
