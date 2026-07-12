@@ -35,6 +35,55 @@ export const detector = {
     // until it's validated on a real VOD. Raise once motion recall is trusted.
     scoreScale: 5,
   },
+  // Vision combat filter (src/detectors/combatFilter.js). The signal detectors
+  // above are content-blind — an amplitude spike from a menu click looks the
+  // same as a sword clash. For action/fighting games, after mergeHighlights,
+  // sample a few frames from each candidate window and ask Claude whether they
+  // show active combat; drop menu/cutscene/idle candidates before the expensive
+  // preview render + Discord review. No-ops (keeps everything) when
+  // ANTHROPIC_API_KEY is unset, the game doesn't match actionGameKeywords, or
+  // anything in the classify path errors — it must never lose a real highlight
+  // or crash the pipeline.
+  combatFilter: {
+    enabled: true,
+    model: 'claude-opus-4-8', // swap for a cheaper model if per-VOD cost matters
+    maxTokens: 100,
+    framesPerHighlight: 3, // sampled evenly inside the candidate window
+    frameWidth: 640, // downscale before base64 — plenty for "is this combat"
+    frameTimeoutMs: 60 * 1000, // per-frame ffmpeg kill switch (same guard class as motion.timeoutMs)
+    ytFormat: 'best[height<=480]/best', // higher than motion's 160p — semantics need some detail
+    // Case-insensitive substring match against the confirmed game name. Only
+    // games matching one of these get combat-filtered; everything else (racing,
+    // strategy, visual novels, ...) passes through untouched. Add entries as
+    // new action/fighting games show up on stream.
+    actionGameKeywords: [
+      'god of war',
+      'devil may cry',
+      'elden ring',
+      'dark souls',
+      'sekiro',
+      'bloodborne',
+      'lies of p',
+      'black myth',
+      'nioh',
+      'ninja gaiden',
+      'bayonetta',
+      'metal gear rising',
+      'nier',
+      'stellar blade',
+      'ghost of tsushima',
+      'ghost of yotei',
+      'monster hunter',
+      'hades',
+      'doom',
+      'street fighter',
+      'mortal kombat',
+      'tekken',
+      'guilty gear',
+      'smash bros',
+      'dragon ball fighterz',
+    ],
+  },
 };
 
 export const editing = {

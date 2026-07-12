@@ -5,6 +5,7 @@ import { logger } from './lib/logger.js';
 import { getLatestVod, getAllVods, getVodGameName } from './twitch/vodFetcher.js';
 import { runDetectors } from './detectors/index.js';
 import { mergeHighlights } from './detectors/merge.js';
+import { filterCombatHighlights } from './detectors/combatFilter.js';
 import reviewBot from './discord/reviewBot.js';
 import { publishClip, closeContext as closePlaywright } from './twitch/clipPublisher.js';
 import { buildPreviewClip } from './processing/previewClip.js';
@@ -69,7 +70,7 @@ export async function processVod(vod, { onClip, gameName: passedGameName = null,
   const allHighlights = detectorResults.flatMap((r) => r.highlights);
   const detectorsFailed = detectorResults.filter((r) => r.error).map((r) => r.name);
   const { banned: bannedRanges = [] } = await loadJson(BANNED_RANGES_FILE, { banned: [] });
-  const highlights = mergeHighlights(allHighlights, { vod, bannedRanges });
+  const merged = mergeHighlights(allHighlights, { vod, bannedRanges });
   let gameName = passedGameName;
   if (!gameName) {
     try {
@@ -78,11 +79,24 @@ export async function processVod(vod, { onClip, gameName: passedGameName = null,
       logger.warn({ err: err?.message, vodId: vod.vodId }, 'pipeline.gameNameFetchFailed');
     }
   }
+  // Content-aware pass: for action/fighting games, drop merged candidates whose
+  // sampled frames show menus/cutscenes/idle footage instead of combat (see
+  // detectors/combatFilter.js — no-ops without ANTHROPIC_API_KEY or for
+  // non-action games). Belt-and-suspenders try/catch even though the filter
+  // fails open internally: a filter bug must never kill highlight processing.
+  let highlights = merged;
+  try {
+    highlights = await filterCombatHighlights(merged, { vod, gameName });
+  } catch (err) {
+    logger.warn({ err: err?.message, vodId: vod.vodId }, 'pipeline.combatFilterFailed');
+  }
   logger.info(
     {
       vodId: vod.vodId,
       byDetector: Object.fromEntries(detectorResults.map((r) => [r.name, r.highlights.length])),
       detectorsFailed,
+      merged: merged.length,
+      combatFiltered: merged.length - highlights.length,
       total: highlights.length,
     },
     'pipeline.highlights',
