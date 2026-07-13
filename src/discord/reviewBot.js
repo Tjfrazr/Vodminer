@@ -35,7 +35,47 @@ let channel = null;
 let ready = false;
 let startPromise = null;
 let approveCallback = null;
+let replenishCallback = null;
 const gamePendingMap = new Map(); // vodId -> { resolve, suggested }
+const LOW_SCORE_THRESHOLD = 8; // clips rated below this get deleted + replaced, same as an explicit disapprove
+
+// Shared by the disapprove flow and the low-score auto-disapprove path in the
+// rate modal handler below — both mean the same thing: this clip is gone,
+// its time range should never be re-suggested, and the pool should backfill
+// a replacement so the VOD's clip count doesn't just shrink.
+async function deleteAndReplenish(manifest, clip, { reason } = {}) {
+  clip.disapproved = true;
+  clip.disapprovedAt = new Date().toISOString();
+  clip.disapproveReason = reason;
+  await writeFile(MANIFEST_FILE, JSON.stringify(manifest, null, 2) + '\n', 'utf8');
+
+  await mkdir(path.dirname(BANNED_RANGES_FILE), { recursive: true });
+  let banned;
+  try { banned = JSON.parse(await readFile(BANNED_RANGES_FILE, 'utf8')); } catch { banned = { banned: [] }; }
+  banned.banned.push({
+    vodId: clip.vodId,
+    startSec: clip.startSec,
+    endSec: clip.endSec,
+    disapprovedAt: clip.disapprovedAt,
+    reason,
+  });
+  await writeFile(BANNED_RANGES_FILE, JSON.stringify(banned, null, 2) + '\n', 'utf8');
+  logger.info(
+    { clipId: clip.clipId, vodId: clip.vodId, startSec: clip.startSec, endSec: clip.endSec, reason },
+    'discord: clip deleted, range banned',
+  );
+
+  if (clip.twitchClipUrl?.includes('clips.twitch.tv/')) {
+    const slug = clip.twitchClipUrl.split('clips.twitch.tv/')[1];
+    await deleteClip(slug).catch((err) => logger.warn({ err: err?.message, slug }, 'discord: twitch deleteClip error'));
+  }
+
+  if (replenishCallback) {
+    await replenishCallback(clip.vodId).catch((err) =>
+      logger.warn({ err: err?.message, vodId: clip.vodId }, 'discord: replenish callback failed'),
+    );
+  }
+}
 
 client.on('error', (err) => {
   logger.error({ err }, 'discord: client error');
@@ -175,28 +215,7 @@ client.on('interactionCreate', async (interaction) => {
       const manifest = JSON.parse(raw);
       const clip = manifest.clips.find((c) => c.clipId === clipId);
       if (clip) {
-        clip.disapproved = true;
-        clip.disapprovedAt = new Date().toISOString();
-        clip.disapproveReason = reason;
-        await writeFile(MANIFEST_FILE, JSON.stringify(manifest, null, 2) + '\n', 'utf8');
-        // Save banned range so the pipeline skips this segment on re-runs
-        await mkdir(path.dirname(BANNED_RANGES_FILE), { recursive: true });
-        let banned;
-        try { banned = JSON.parse(await readFile(BANNED_RANGES_FILE, 'utf8')); } catch { banned = { banned: [] }; }
-        banned.banned.push({
-          vodId: clip.vodId,
-          startSec: clip.startSec,
-          endSec: clip.endSec,
-          disapprovedAt: clip.disapprovedAt,
-          reason,
-        });
-        await writeFile(BANNED_RANGES_FILE, JSON.stringify(banned, null, 2) + '\n', 'utf8');
-        logger.info({ clipId, vodId: clip.vodId, startSec: clip.startSec, endSec: clip.endSec, reason }, 'discord: clip disapproved, range banned');
-        // Delete from Twitch if we have a user token and a clip URL
-        if (clip.twitchClipUrl?.includes('clips.twitch.tv/')) {
-          const slug = clip.twitchClipUrl.split('clips.twitch.tv/')[1];
-          await deleteClip(slug).catch((err) => logger.warn({ err: err?.message, slug }, 'discord: twitch deleteClip error'));
-        }
+        await deleteAndReplenish(manifest, clip, { reason });
         // Edit the original clip message to remove buttons and show disapproval
         await interaction.message?.edit({
           content: `${interaction.message.content}\n${disapproveLine}`,
@@ -211,13 +230,17 @@ client.on('interactionCreate', async (interaction) => {
     return;
   }
 
-  // Rate modal submitted → save score + reason, keep Approve button
+  // Rate modal submitted → save score + reason. Below LOW_SCORE_THRESHOLD is
+  // treated as an implicit disapprove: delete + ban the range + replenish,
+  // same as clicking Disapprove, since asking the user to also click
+  // Disapprove after already saying "this is a 3/10" is redundant.
   if (interaction.isModalSubmit() && interaction.customId.startsWith('ratemodal_')) {
     const withoutPrefix = interaction.customId.slice('ratemodal_'.length);
     const lastUnderscore = withoutPrefix.lastIndexOf('_');
     const clipId = withoutPrefix.slice(0, lastUnderscore);
     const score = Number(withoutPrefix.slice(lastUnderscore + 1));
     const reason = interaction.fields.getTextInputValue('reason').trim() || null;
+    let lowScoreDeleted = false;
     try {
       const raw = await readFile(MANIFEST_FILE, 'utf8');
       const manifest = JSON.parse(raw);
@@ -226,13 +249,25 @@ client.on('interactionCreate', async (interaction) => {
         clip.rating = score;
         clip.ratingReason = reason;
         clip.ratedAt = new Date().toISOString();
-        await writeFile(MANIFEST_FILE, JSON.stringify(manifest, null, 2) + '\n', 'utf8');
-        logger.info({ clipId, score, reason }, 'discord: clip rated');
+        if (score < LOW_SCORE_THRESHOLD) {
+          lowScoreDeleted = true;
+          await deleteAndReplenish(manifest, clip, { reason: reason ?? `rated ${score}/10` });
+        } else {
+          await writeFile(MANIFEST_FILE, JSON.stringify(manifest, null, 2) + '\n', 'utf8');
+        }
+        logger.info({ clipId, score, reason, lowScoreDeleted }, 'discord: clip rated');
       }
     } catch (err) {
       logger.warn({ err: err?.message, clipId }, 'discord: rating save failed');
     }
     const ratingLine = reason ? `**Rated ${score}/10** — ${reason}` : `**Rated ${score}/10**`;
+    if (lowScoreDeleted) {
+      await interaction.update({
+        content: `${interaction.message.content}\n${ratingLine}\n**Below ${LOW_SCORE_THRESHOLD}/10 — deleted, replaced from pool** ✓`,
+        components: [],
+      });
+      return;
+    }
     const actionRow = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`approve_${clipId}`).setLabel('✅ Approve + TikTok').setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId(`disapprove_${clipId}`).setLabel('❌ Disapprove').setStyle(ButtonStyle.Danger),
@@ -477,6 +512,10 @@ function onApprove(cb) {
   approveCallback = cb;
 }
 
+function onReplenish(cb) {
+  replenishCallback = cb;
+}
+
 async function stop() {
   if (!ready) return;
   await client.destroy();
@@ -485,7 +524,7 @@ async function stop() {
   startPromise = null;
 }
 
-const reviewBot = { start, sendPreview, sendSummary, sendClipRating, askGameName, onApprove, stop };
+const reviewBot = { start, sendPreview, sendSummary, sendClipRating, askGameName, onApprove, onReplenish, stop };
 
-export { start, sendPreview, sendSummary, sendClipRating, askGameName, onApprove, stop };
+export { start, sendPreview, sendSummary, sendClipRating, askGameName, onApprove, onReplenish, stop };
 export default reviewBot;

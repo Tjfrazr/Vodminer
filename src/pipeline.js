@@ -5,7 +5,7 @@ import { env } from './lib/env.js';
 import { logger } from './lib/logger.js';
 import { getLatestVod, getAllVods, getVodGameName } from './twitch/vodFetcher.js';
 import { runDetectors } from './detectors/index.js';
-import { mergeHighlights } from './detectors/merge.js';
+import { mergeHighlightsWithReserve } from './detectors/merge.js';
 import { filterCombatHighlights, extractFrame } from './detectors/combatFilter.js';
 import { categorizeRacingHighlights } from './detectors/racingFilter.js';
 import { resolveStreamUrl } from './lib/streamUrl.js';
@@ -13,6 +13,7 @@ import { detector as detectorCfg } from '../config.js';
 import reviewBot from './discord/reviewBot.js';
 import { publishClip, closeContext as closePlaywright } from './twitch/clipPublisher.js';
 import { buildPreviewClip } from './processing/previewClip.js';
+import { saveReservePool, loadReservePool } from './lib/highlightPool.js';
 
 // Grabs one frame partway into the VOD so the Discord "confirm the game"
 // prompt shows what's actually on screen — auto-detect is often wrong or
@@ -51,6 +52,13 @@ reviewBot.onApprove(async ({ clipId, vodId, startSec, endSec, gameName, category
   } finally {
     await closePlaywright().catch(() => {});
   }
+});
+
+// A clip getting deleted (disapproved, or rated below the low-score threshold)
+// shouldn't just shrink the count for that VOD — pull the next-best unused
+// candidate from the reserve pool so the total stays where it was.
+reviewBot.onReplenish(async (vodId) => {
+  await replenishClip(vodId).catch((err) => logger.warn({ err: err?.message, vodId }, 'pipeline.replenishFailed'));
 });
 
 const STATE_DIR = path.resolve('state');
@@ -97,7 +105,7 @@ export async function processVod(vod, { onClip, gameName: passedGameName = null,
   const allHighlights = detectorResults.flatMap((r) => r.highlights);
   const detectorsFailed = detectorResults.filter((r) => r.error).map((r) => r.name);
   const { banned: bannedRanges = [] } = await loadJson(BANNED_RANGES_FILE, { banned: [] });
-  const merged = mergeHighlights(allHighlights, { vod, bannedRanges });
+  const { accepted: merged, reserve } = mergeHighlightsWithReserve(allHighlights, { vod, bannedRanges });
   let gameName = passedGameName;
   if (!gameName) {
     try {
@@ -106,6 +114,13 @@ export async function processVod(vod, { onClip, gameName: passedGameName = null,
       logger.warn({ err: err?.message, vodId: vod.vodId }, 'pipeline.gameNameFetchFailed');
     }
   }
+  // Keep what lost out to the maxHighlights cap so a clip deleted later
+  // (low rating / disapproval) can be replaced from real candidates instead
+  // of the pool just shrinking. See lib/highlightPool.js.
+  await saveReservePool(
+    vod.vodId,
+    reserve.length ? { vod: { vodId: vod.vodId, url: vod.url, durationSec: vod.durationSec }, gameName, highlights: reserve } : null,
+  );
   // Content-aware pass: for action/fighting games, drop merged candidates whose
   // sampled frames show menus/cutscenes/idle footage instead of combat (see
   // detectors/combatFilter.js — runs against a local Ollama model, no-ops if
@@ -202,6 +217,141 @@ export async function getUnprocessedVods(broadcasterId) {
     .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
 }
 
+// Publishes one clip to Twitch/TikTok (if configured) and sends it to Discord
+// for review. Extracted out of runPipeline's onClip callback so replenishClip
+// (a clip pulled from the reserve pool well after the original pipeline run
+// finished) can go through the exact same publish+manifest+review path
+// instead of a second, drifting copy of it.
+async function publishAndReviewClip(vod, clip, { skipTwitch = false } = {}) {
+  let twitchResult = null;
+  if (!skipTwitch) {
+    const title = buildClipTitle(clip.gameName, clip.startSec, clip.category);
+    try {
+      twitchResult = await publishClip(
+        { vodId: vod.vodId, startSec: clip.startSec, endSec: clip.endSec, title },
+        { headless: true, skipTikTok: env.SKIP_TIKTOK_DRAFTS },
+      );
+    } catch (err) {
+      logger.warn({ err: err?.message, vodId: vod.vodId, clipId: clip.id }, 'pipeline.twitchPublishFailed');
+    }
+  }
+
+  const manifest = await loadJson(MANIFEST_FILE, { clips: [] });
+  const key = `${vod.vodId}:${clip.startSec}-${clip.endSec}`;
+  if (!manifest.clips.some((c) => `${c.vodId}:${c.startSec}-${c.endSec}` === key)) {
+    manifest.clips.push({
+      vodId: vod.vodId,
+      vodUrl: vod.url,
+      clipId: clip.id,
+      filePath: clip.filePath,
+      startSec: clip.startSec,
+      endSec: clip.endSec,
+      durationSec: clip.durationSec,
+      score: clip.score,
+      gameName: clip.gameName ?? null,
+      reason: clip.reason ?? null,
+      category: clip.category ?? null,
+      viewerClipTitle: clip.viewerClipTitle ?? null,
+      createdAt: clip.createdAt,
+      twitchClipUrl: twitchResult?.clipUrl ?? null,
+      twitchPublished: !!twitchResult?.published,
+    });
+    await saveJson(MANIFEST_FILE, manifest);
+  }
+
+  const preview = await buildPreviewClip(vod.vodId, clip.startSec, clip.endSec).catch((err) => {
+    logger.warn({ err: err?.message, clipId: clip.id }, 'pipeline.previewClipFailed');
+    return null;
+  });
+  try {
+    await reviewBot.sendClipRating({
+      clipId: clip.id,
+      gameName: clip.gameName,
+      category: clip.category,
+      startSec: clip.startSec,
+      score: clip.score,
+      reason: clip.reason,
+      viewerClipTitle: clip.viewerClipTitle,
+      twitchClipUrl: twitchResult?.clipUrl ?? null,
+      vodId: vod.vodId,
+      filePath: preview?.filePath ?? null,
+    }).catch((err) => logger.warn({ err: err?.message }, 'pipeline.ratingMessageFailed'));
+  } finally {
+    await preview?.cleanup();
+  }
+  return twitchResult;
+}
+
+// Pulls the next-best unused candidate from vodId's reserve pool (see
+// lib/highlightPool.js) and publishes it exactly like a normal clip, so
+// deleting a bad clip doesn't just shrink the count for that VOD. Skips pool
+// entries that got banned or already used since the pool was last saved
+// (e.g. two disapprovals landing on overlapping candidates), and runs the
+// same content filters a normal run would so a replacement doesn't bypass
+// the combat/racing checks. No-ops (logs and returns null) once the pool for
+// this VOD is exhausted — never invents a highlight that wasn't detected.
+export async function replenishClip(vodId) {
+  const pool = await loadReservePool(vodId);
+  if (!pool?.highlights?.length) {
+    logger.info({ vodId }, 'pipeline.replenish.poolEmpty');
+    return null;
+  }
+
+  const { banned: bannedRanges = [] } = await loadJson(BANNED_RANGES_FILE, { banned: [] });
+  const vodBanned = bannedRanges.filter((b) => b.vodId === vodId);
+  const manifest = await loadJson(MANIFEST_FILE, { clips: [] });
+  const usedRanges = new Set(
+    manifest.clips.filter((c) => c.vodId === vodId).map((c) => `${c.startSec}-${c.endSec}`),
+  );
+
+  while (pool.highlights.length > 0) {
+    const candidate = pool.highlights.shift();
+    const overlapsBanned = vodBanned.some((b) => candidate.startSec < b.endSec && candidate.endSec > b.startSec);
+    const alreadyUsed = usedRanges.has(`${candidate.startSec}-${candidate.endSec}`);
+    if (overlapsBanned || alreadyUsed) continue;
+
+    let survivors = [candidate];
+    try {
+      survivors = await filterCombatHighlights([candidate], { vod: pool.vod, gameName: pool.gameName });
+    } catch (err) {
+      logger.warn({ err: err?.message, vodId }, 'pipeline.replenish.combatFilterFailed');
+    }
+    if (survivors.length === 0) continue; // combat filter dropped it — try the next candidate
+
+    let chosen = survivors[0];
+    try {
+      const [categorized] = await categorizeRacingHighlights([chosen], { vod: pool.vod, gameName: pool.gameName });
+      if (categorized) chosen = categorized;
+    } catch (err) {
+      logger.warn({ err: err?.message, vodId }, 'pipeline.replenish.racingFilterFailed');
+    }
+
+    await saveReservePool(vodId, pool.highlights.length ? pool : null);
+
+    const clip = {
+      id: `${vodId}-${chosen.startSec}-${chosen.endSec}`,
+      startSec: chosen.startSec,
+      endSec: chosen.endSec,
+      durationSec: chosen.endSec - chosen.startSec,
+      score: chosen.score,
+      createdAt: new Date().toISOString(),
+      filePath: null,
+      gameName: pool.gameName,
+      reason: chosen.reason,
+      category: chosen.category ?? null,
+      viewerClipTitle: chosen.viewerClipTitle ?? null,
+    };
+    const skipTwitch = !(await profileExists());
+    await publishAndReviewClip(pool.vod, clip, { skipTwitch });
+    logger.info({ vodId, clipId: clip.id }, 'pipeline.replenish.published');
+    return clip;
+  }
+
+  await saveReservePool(vodId, null);
+  logger.info({ vodId }, 'pipeline.replenish.poolExhausted');
+  return null;
+}
+
 export async function runPipeline(eventPayload) {
   const broadcasterId = eventPayload?.broadcasterId || env.TWITCH_BROADCASTER_ID;
   logger.info({ broadcasterId }, 'pipeline.start');
@@ -245,9 +395,6 @@ export async function runPipeline(eventPayload) {
     logger.warn({ err: err?.message }, 'pipeline.startNotifyFailed');
   }
 
-  const manifest = await loadJson(MANIFEST_FILE, { clips: [] });
-  const manifestSet = new Set(manifest.clips.map((c) => `${c.vodId}:${c.startSec}-${c.endSec}`));
-
   let rendered = 0;
   let published = 0;
   let failed = 0;
@@ -276,65 +423,11 @@ export async function runPipeline(eventPayload) {
       onDetectorProgress,
       onClip: async (clip) => {
         rendered += 1;
-        let twitchResult = null;
+        const twitchResult = await publishAndReviewClip(vod, clip, { skipTwitch });
         if (!skipTwitch) {
-          const title = buildClipTitle(clip.gameName, clip.startSec, clip.category);
-          try {
-            twitchResult = await publishClip(
-              { vodId: vod.vodId, startSec: clip.startSec, endSec: clip.endSec, title },
-              { headless: true, skipTikTok: env.SKIP_TIKTOK_DRAFTS },
-            );
-            if (twitchResult.published) published += 1;
-            else failed += 1;
-            if (twitchResult.tiktokDraftSent) tiktokDrafts += 1;
-          } catch (err) {
-            failed += 1;
-            logger.warn({ err: err?.message, vodId: vod.vodId, clipId: clip.id }, 'pipeline.twitchPublishFailed');
-          }
-        }
-
-        const key = `${vod.vodId}:${clip.startSec}-${clip.endSec}`;
-        if (!manifestSet.has(key)) {
-          manifest.clips.push({
-            vodId: vod.vodId,
-            vodUrl: vod.url,
-            clipId: clip.id,
-            filePath: clip.filePath,
-            startSec: clip.startSec,
-            endSec: clip.endSec,
-            durationSec: clip.durationSec,
-            score: clip.score,
-            gameName: clip.gameName ?? null,
-            reason: clip.reason ?? null,
-            category: clip.category ?? null,
-            viewerClipTitle: clip.viewerClipTitle ?? null,
-            createdAt: clip.createdAt,
-            twitchClipUrl: twitchResult?.clipUrl ?? null,
-            twitchPublished: !!twitchResult?.published,
-          });
-          manifestSet.add(key);
-          await saveJson(MANIFEST_FILE, manifest);
-        }
-
-        const preview = await buildPreviewClip(vod.vodId, clip.startSec, clip.endSec).catch((err) => {
-          logger.warn({ err: err?.message, clipId: clip.id }, 'pipeline.previewClipFailed');
-          return null;
-        });
-        try {
-          await reviewBot.sendClipRating({
-            clipId: clip.id,
-            gameName: clip.gameName,
-            category: clip.category,
-            startSec: clip.startSec,
-            score: clip.score,
-            reason: clip.reason,
-            viewerClipTitle: clip.viewerClipTitle,
-            twitchClipUrl: twitchResult?.clipUrl ?? null,
-            vodId: vod.vodId,
-            filePath: preview?.filePath ?? null,
-          }).catch((err) => logger.warn({ err: err?.message }, 'pipeline.ratingMessageFailed'));
-        } finally {
-          await preview?.cleanup();
+          if (twitchResult?.published) published += 1;
+          else failed += 1;
+          if (twitchResult?.tiktokDraftSent) tiktokDrafts += 1;
         }
       },
     });

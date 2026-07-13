@@ -1,5 +1,5 @@
 import '../__fixtures__/setEnv.js';
-import { mergeHighlights } from '../../src/detectors/merge.js';
+import { mergeHighlights, mergeHighlightsWithReserve } from '../../src/detectors/merge.js';
 
 const vod = { vodId: 'v1', durationSec: 3600 };
 const viewer = (startSec, endSec, score) => ({ vodId: 'v1', startSec, endSec, score, reason: 'viewer_clip' });
@@ -47,5 +47,35 @@ describe('mergeHighlights', () => {
     const out = mergeHighlights([viewer(100, 160, 5), viewer(120, 180, 2)], { vod });
     expect(out).toHaveLength(1);
     expect(out[0].startSec).toBe(100); // score 999+5 beats 999+2
+  });
+});
+
+describe('mergeHighlightsWithReserve', () => {
+  it('returns the same accepted list mergeHighlights would', () => {
+    const hl = [audio(900, 960, 1), audio(100, 160, 9), audio(500, 560, 5)];
+    const { accepted } = mergeHighlightsWithReserve(hl, { vod, maxHighlights: 2 });
+    expect(accepted).toEqual(mergeHighlights(hl, { vod, maxHighlights: 2 }));
+  });
+
+  it('returns everything the cap dropped, score-ranked highest first', () => {
+    const hl = [audio(900, 960, 1), audio(100, 160, 9), audio(500, 560, 5), audio(700, 760, 7)];
+    const { reserve } = mergeHighlightsWithReserve(hl, { vod, maxHighlights: 2 });
+    // top 2 by score (9, 7) are accepted; reserve is what's left, still score-ranked
+    expect(reserve.map((h) => h.score)).toEqual([5, 1]);
+  });
+
+  it('reserve is empty when nothing exceeds the cap', () => {
+    const { reserve } = mergeHighlightsWithReserve([audio(100, 160, 3)], { vod, maxHighlights: 5 });
+    expect(reserve).toEqual([]);
+  });
+
+  it('excludes banned-range highlights from the reserve too, not just accepted', () => {
+    const bannedRanges = [{ vodId: 'v1', startSec: 210, endSec: 250 }];
+    const { accepted, reserve } = mergeHighlightsWithReserve(
+      [audio(100, 160, 9), audio(200, 260, 5)],
+      { vod, bannedRanges, maxHighlights: 1 },
+    );
+    expect(accepted.map((h) => h.startSec)).toEqual([100]);
+    expect(reserve).toEqual([]); // the banned one must not resurface via the reserve
   });
 });

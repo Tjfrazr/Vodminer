@@ -22,7 +22,15 @@ function collides(candidate, accepted) {
  * Generalization: suppression now applies across ALL detectors (and same-source
  * overlaps), so two near-identical clips are no longer both emitted.
  */
-export function mergeHighlights(highlights, { vod, bannedRanges = [], maxHighlights = detectorCfg.maxHighlightsPerVod } = {}) {
+export function mergeHighlights(highlights, opts) {
+  return mergeHighlightsWithReserve(highlights, opts).accepted;
+}
+
+// Same computation as mergeHighlights, but also returns everything that lost
+// out to the maxHighlights cap (score-ranked, highest first) instead of
+// silently discarding it — see lib/highlightPool.js for why that tail is
+// worth keeping.
+export function mergeHighlightsWithReserve(highlights, { vod, bannedRanges = [], maxHighlights = detectorCfg.maxHighlightsPerVod } = {}) {
   const ranked = [...highlights].sort((a, b) => b.score - a.score);
   const accepted = [];
   for (const h of ranked) {
@@ -37,5 +45,8 @@ export function mergeHighlights(highlights, { vod, bannedRanges = [], maxHighlig
     logger.info({ vodId: vod?.vodId, skipped: accepted.length - notBanned.length }, 'merge.bannedRangesFiltered');
   }
 
-  return notBanned.slice(0, maxHighlights).sort((a, b) => a.startSec - b.startSec);
+  return {
+    accepted: notBanned.slice(0, maxHighlights).sort((a, b) => a.startSec - b.startSec),
+    reserve: notBanned.slice(maxHighlights),
+  };
 }
