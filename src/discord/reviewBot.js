@@ -34,7 +34,7 @@ let channel = null;
 let ready = false;
 let startPromise = null;
 let approveCallback = null;
-const gamePendingMap = new Map(); // vodId -> { resolve, timeout }
+const gamePendingMap = new Map(); // vodId -> { resolve, suggested }
 
 client.on('error', (err) => {
   logger.error({ err }, 'discord: client error');
@@ -77,7 +77,6 @@ client.on('interactionCreate', async (interaction) => {
     const game = interaction.fields.getTextInputValue('game').trim();
     const pending = gamePendingMap.get(vodId);
     if (pending) {
-      clearTimeout(pending.timeout);
       gamePendingMap.delete(vodId);
       pending.resolve(game);
     }
@@ -446,28 +445,28 @@ async function sendClipRating({ clipId, gameName, startSec, score, reason, viewe
   await sendWithAttachmentFallback(payload, { clipId });
 }
 
-async function askGameName(vodId, suggestedGame, timeoutMs = 120000) {
+// No timeout — waits indefinitely for the modal submit. An earlier 120s
+// auto-accept-and-proceed caused wrong-game runs (combat filter keys off
+// gameName, so a silent "unknown" meant it never filtered at all).
+async function askGameName(vodId, suggestedGame, { previewImagePath } = {}) {
   if (!ready || !channel) throw new Error('reviewBot not started — call start() first');
   return new Promise(async (resolve) => {
-    const timeout = setTimeout(() => {
-      gamePendingMap.delete(vodId);
-      logger.info({ vodId, fallback: suggestedGame }, 'discord: game name timeout, using auto-detected');
-      resolve(suggestedGame);
-    }, timeoutMs);
-    gamePendingMap.set(vodId, { resolve, timeout, suggested: suggestedGame ?? '' });
+    gamePendingMap.set(vodId, { resolve, suggested: suggestedGame ?? '' });
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId(`gameinput_${vodId}`)
         .setLabel('✏️ Set game name')
         .setStyle(ButtonStyle.Primary),
     );
-    const timeoutSec = Math.round(timeoutMs / 1000);
     const content = [
       `**New VOD detected — confirm the game**`,
       `VOD \`${vodId}\` · Auto-detected: **${suggestedGame ?? 'unknown'}**`,
-      `Click to correct, or ignore to accept (${timeoutSec}s timeout).`,
+      `Processing is paused until this is confirmed.`,
     ].join('\n');
-    await channel.send({ content, components: [row] });
+    await sendWithAttachmentFallback(
+      { content, components: [row], ...(previewImagePath ? { files: [previewImagePath] } : {}) },
+      { vodId },
+    );
   });
 }
 

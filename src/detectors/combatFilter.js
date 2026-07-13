@@ -61,7 +61,7 @@ const PROMPT =
 // Input-side -ss makes ffmpeg fetch only the segments around the seek point,
 // so this is cheap even on a multi-hour VOD. Same spawn/timer/settled guard
 // pattern as previewClip.compress and motionDetector.runSceneDetect.
-function extractFrame(streamUrl, timeSec, outPath, { timeoutMs = CF.frameTimeoutMs } = {}) {
+export function extractFrame(streamUrl, timeSec, outPath, { timeoutMs = CF.frameTimeoutMs } = {}) {
   return new Promise((resolve, reject) => {
     const ff = spawn('ffmpeg', [
       '-hide_banner', '-loglevel', 'error', '-y',

@@ -1,14 +1,39 @@
 import path from 'node:path';
-import { mkdir, readFile, writeFile, stat } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, stat, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { env } from './lib/env.js';
 import { logger } from './lib/logger.js';
 import { getLatestVod, getAllVods, getVodGameName } from './twitch/vodFetcher.js';
 import { runDetectors } from './detectors/index.js';
 import { mergeHighlights } from './detectors/merge.js';
-import { filterCombatHighlights } from './detectors/combatFilter.js';
+import { filterCombatHighlights, extractFrame } from './detectors/combatFilter.js';
+import { resolveStreamUrl } from './lib/streamUrl.js';
+import { detector as detectorCfg } from '../config.js';
 import reviewBot from './discord/reviewBot.js';
 import { publishClip, closeContext as closePlaywright } from './twitch/clipPublisher.js';
 import { buildPreviewClip } from './processing/previewClip.js';
+
+// Grabs one frame partway into the VOD so the Discord "confirm the game"
+// prompt shows what's actually on screen — auto-detect is often wrong or
+// "unknown" and a blank text prompt gives no way to eyeball the real game.
+// Midpoint (capped at 10min in) dodges intro/loading screens on long VODs
+// without needing per-game tuning. Fail-open: any extraction error just
+// means the prompt goes out without an image, never blocks the ask.
+async function extractGamePreviewFrame(vod) {
+  let dir;
+  try {
+    const streamUrl = await resolveStreamUrl(vod.url, detectorCfg.combatFilter.ytFormat);
+    const t = Math.min(vod.durationSec / 2, 600);
+    dir = await mkdtemp(path.join(tmpdir(), 'vodminer-preview-'));
+    const framePath = path.join(dir, 'preview.jpg');
+    await extractFrame(streamUrl, t, framePath);
+    return framePath;
+  } catch (err) {
+    logger.warn({ err: err?.message, vodId: vod.vodId }, 'pipeline.gamePreviewFrameFailed');
+    if (dir) await rm(dir, { recursive: true, force: true }).catch(() => {});
+    return null;
+  }
+}
 
 reviewBot.onApprove(async ({ clipId, vodId, startSec, endSec, gameName }) => {
   const title = buildClipTitle(gameName, startSec);
@@ -189,10 +214,13 @@ export async function runPipeline(eventPayload) {
     logger.warn({ err: err?.message, vodId: vod.vodId }, 'pipeline.gameNameFetchFailed');
   }
 
+  const previewImagePath = await extractGamePreviewFrame(vod);
   try {
-    gameName = await reviewBot.askGameName(vod.vodId, gameName);
+    gameName = await reviewBot.askGameName(vod.vodId, gameName, { previewImagePath });
   } catch (err) {
     logger.warn({ err: err?.message }, 'pipeline.gameNameAskFailed');
+  } finally {
+    if (previewImagePath) await rm(path.dirname(previewImagePath), { recursive: true, force: true }).catch(() => {});
   }
 
   const startSummary =
