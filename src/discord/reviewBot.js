@@ -43,7 +43,17 @@ const LOW_SCORE_THRESHOLD = 8; // clips rated below this get deleted + replaced,
 // rate modal handler below — both mean the same thing: this clip is gone,
 // its time range should never be re-suggested, and the pool should backfill
 // a replacement so the VOD's clip count doesn't just shrink.
+//
+// Idempotency guard: a duplicate modal submission (e.g. a user retrying
+// after Discord showed a client-side interaction-timeout error while this
+// was still running from the first submit) must not re-run this — each run
+// bans the range again and triggers another replenish, silently stacking up
+// extra replacement clips for one rating action.
 async function deleteAndReplenish(manifest, clip, { reason } = {}) {
+  if (clip.disapproved) {
+    logger.info({ clipId: clip.clipId, vodId: clip.vodId }, 'discord: clip already deleted, skipping duplicate replenish');
+    return;
+  }
   clip.disapproved = true;
   clip.disapprovedAt = new Date().toISOString();
   clip.disapproveReason = reason;

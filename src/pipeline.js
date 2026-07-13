@@ -308,15 +308,21 @@ async function publishAndReviewClip(vod, clip, { skipTwitch = false } = {}) {
   return twitchResult;
 }
 
-// Pulls the next-best unused candidate from vodId's reserve pool (see
-// lib/highlightPool.js) and publishes it exactly like a normal clip, so
-// deleting a bad clip doesn't just shrink the count for that VOD. Skips pool
-// entries that got banned or already used since the pool was last saved
-// (e.g. two disapprovals landing on overlapping candidates), and runs the
-// same content filters a normal run would so a replacement doesn't bypass
-// the combat/racing checks. No-ops (logs and returns null) once the pool for
-// this VOD is exhausted — never invents a highlight that wasn't detected.
+// Serializes replenishClip calls per vodId. Without this, two calls that
+// overlap in time (e.g. two low-rated clips from the same VOD landing close
+// together, or a duplicate Discord interaction) both load the pool before
+// either saves it, both pop the same top candidate, and both publish it —
+// observed in production as the same replacement clip getting published
+// 4 times in a row from a burst of retried ratings.
+const replenishLocks = new Map();
 export async function replenishClip(vodId) {
+  const prev = replenishLocks.get(vodId) ?? Promise.resolve();
+  const next = prev.then(() => replenishClipLocked(vodId), () => replenishClipLocked(vodId));
+  replenishLocks.set(vodId, next.catch(() => {}));
+  return next;
+}
+
+async function replenishClipLocked(vodId) {
   const pool = await loadReservePool(vodId);
   if (!pool?.highlights?.length) {
     logger.info({ vodId }, 'pipeline.replenish.poolEmpty');
