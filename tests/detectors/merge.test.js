@@ -78,4 +78,29 @@ describe('mergeHighlightsWithReserve', () => {
     expect(accepted.map((h) => h.startSec)).toEqual([100]);
     expect(reserve).toEqual([]); // the banned one must not resurface via the reserve
   });
+
+  it('a category weight can flip which of two close-scored candidates gets accepted', () => {
+    const low = { ...audio(100, 160, 5), category: 'DRIFT' };
+    const high = { ...audio(500, 560, 6), category: 'CRASH' };
+    const noWeights = mergeHighlightsWithReserve([low, high], { vod, maxHighlights: 1 });
+    expect(noWeights.accepted[0].category).toBe('CRASH'); // raw score wins with no history
+
+    const weighted = mergeHighlightsWithReserve([low, high], {
+      vod,
+      maxHighlights: 1,
+      categoryWeights: { DRIFT: 1.5, CRASH: 0.5 },
+    });
+    expect(weighted.accepted[0].category).toBe('DRIFT'); // 5*1.5=7.5 beats 6*0.5=3
+  });
+
+  it('falls back to reason for weighting when category is absent', () => {
+    const hl = [audio(100, 160, 5), audio(500, 560, 6)];
+    const { accepted } = mergeHighlightsWithReserve(hl, {
+      vod,
+      maxHighlights: 1,
+      categoryWeights: { audio_transient: 2 },
+    });
+    // both share reason 'audio_transient', so the weight applies equally — raw score still decides
+    expect(accepted[0].startSec).toBe(500);
+  });
 });

@@ -30,8 +30,14 @@ export function mergeHighlights(highlights, opts) {
 // out to the maxHighlights cap (score-ranked, highest first) instead of
 // silently discarding it — see lib/highlightPool.js for why that tail is
 // worth keeping.
-export function mergeHighlightsWithReserve(highlights, { vod, bannedRanges = [], maxHighlights = detectorCfg.maxHighlightsPerVod } = {}) {
-  const ranked = [...highlights].sort((a, b) => b.score - a.score);
+// categoryWeights: optional { [category|reason]: multiplier } from
+// lib/categoryWeights.js, applied to score before ranking so highlight types
+// you've historically rated well get selected ahead of ones you rate poorly.
+// Keyed by category when known, else reason — see categoryWeights.js for why
+// a not-yet-categorized candidate can only be weighted by reason.
+export function mergeHighlightsWithReserve(highlights, { vod, bannedRanges = [], maxHighlights = detectorCfg.maxHighlightsPerVod, categoryWeights = {} } = {}) {
+  const weighted = (h) => h.score * (categoryWeights[h.category ?? h.reason] ?? 1);
+  const ranked = [...highlights].sort((a, b) => weighted(b) - weighted(a));
   const accepted = [];
   for (const h of ranked) {
     if (!accepted.some((a) => collides(h, a))) accepted.push(h);

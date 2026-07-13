@@ -14,6 +14,7 @@ import reviewBot from './discord/reviewBot.js';
 import { publishClip, closeContext as closePlaywright } from './twitch/clipPublisher.js';
 import { buildPreviewClip } from './processing/previewClip.js';
 import { saveReservePool, loadReservePool } from './lib/highlightPool.js';
+import { computeCategoryWeights } from './lib/categoryWeights.js';
 
 // Grabs one frame partway into the VOD so the Discord "confirm the game"
 // prompt shows what's actually on screen — auto-detect is often wrong or
@@ -105,7 +106,8 @@ export async function processVod(vod, { onClip, gameName: passedGameName = null,
   const allHighlights = detectorResults.flatMap((r) => r.highlights);
   const detectorsFailed = detectorResults.filter((r) => r.error).map((r) => r.name);
   const { banned: bannedRanges = [] } = await loadJson(BANNED_RANGES_FILE, { banned: [] });
-  const { accepted: merged, reserve } = mergeHighlightsWithReserve(allHighlights, { vod, bannedRanges });
+  const categoryWeights = await computeCategoryWeights();
+  const { accepted: merged, reserve } = mergeHighlightsWithReserve(allHighlights, { vod, bannedRanges, categoryWeights });
   let gameName = passedGameName;
   if (!gameName) {
     try {
@@ -303,6 +305,14 @@ export async function replenishClip(vodId) {
   const usedRanges = new Set(
     manifest.clips.filter((c) => c.vodId === vodId).map((c) => `${c.startSec}-${c.endSec}`),
   );
+
+  // Re-rank by rating history before picking a replacement — same weighting
+  // mergeHighlights applies, recomputed fresh since ratings may have come in
+  // since this pool was saved. Pool entries are pre-categorization, so this
+  // can only weight by reason (see categoryWeights.js).
+  const categoryWeights = await computeCategoryWeights();
+  const weighted = (h) => h.score * (categoryWeights[h.category ?? h.reason] ?? 1);
+  pool.highlights.sort((a, b) => weighted(b) - weighted(a));
 
   while (pool.highlights.length > 0) {
     const candidate = pool.highlights.shift();
