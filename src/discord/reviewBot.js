@@ -279,6 +279,7 @@ client.on('interactionCreate', async (interaction) => {
           startSec: clipData.startSec,
           endSec: clipData.endSec,
           gameName: clipData.gameName ?? null,
+          category: clipData.category ?? null,
           score,
           reason,
         });
@@ -399,7 +400,7 @@ async function sendSummary(text) {
   return msg.url;
 }
 
-async function sendClipRating({ clipId, gameName, startSec, score, reason, viewerClipTitle, twitchClipUrl, vodId, filePath }) {
+async function sendClipRating({ clipId, gameName, category, startSec, score, reason, viewerClipTitle, twitchClipUrl, vodId, filePath }) {
   if (!ready || !channel) throw new Error('reviewBot not started — call start() first');
 
   const rows = [
@@ -417,8 +418,9 @@ async function sendClipRating({ clipId, gameName, startSec, score, reason, viewe
 
   const sourceLabel = twitchClipUrl ? twitchClipUrl : `VOD \`${vodId}\` @ ${fmtTimestamp(startSec)}`;
   const reasonLabel = reason === 'viewer_clip' ? `Viewer clip: "${viewerClipTitle}"` : 'Audio transient';
+  const categoryLabel = category ? ` · **${category.replaceAll('_', ' ')}**` : '';
   const content = [
-    `**${gameName ?? 'Unknown game'}** — ${fmtTimestamp(startSec)}`,
+    `**${gameName ?? 'Unknown game'}**${categoryLabel} — ${fmtTimestamp(startSec)}`,
     sourceLabel,
     `Auto-score: ${score} · ${reasonLabel}`,
     `-# Rate this clip (tap a number to add a comment)`,

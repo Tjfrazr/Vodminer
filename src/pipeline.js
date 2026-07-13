@@ -7,6 +7,7 @@ import { getLatestVod, getAllVods, getVodGameName } from './twitch/vodFetcher.js
 import { runDetectors } from './detectors/index.js';
 import { mergeHighlights } from './detectors/merge.js';
 import { filterCombatHighlights, extractFrame } from './detectors/combatFilter.js';
+import { categorizeRacingHighlights } from './detectors/racingFilter.js';
 import { resolveStreamUrl } from './lib/streamUrl.js';
 import { detector as detectorCfg } from '../config.js';
 import reviewBot from './discord/reviewBot.js';
@@ -35,8 +36,8 @@ async function extractGamePreviewFrame(vod) {
   }
 }
 
-reviewBot.onApprove(async ({ clipId, vodId, startSec, endSec, gameName }) => {
-  const title = buildClipTitle(gameName, startSec);
+reviewBot.onApprove(async ({ clipId, vodId, startSec, endSec, gameName, category }) => {
+  const title = buildClipTitle(gameName, startSec, category);
   try {
     const result = await publishClip(
       { vodId, startSec, endSec, title },
@@ -85,9 +86,10 @@ function formatDuration(sec) {
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
-function buildClipTitle(gameName, startSec) {
+function buildClipTitle(gameName, startSec, category) {
   const ts = formatTimestamp(startSec);
-  return gameName ? `${gameName} highlight @ ${ts}` : `Highlight @ ${ts}`;
+  const label = category ? category.replaceAll('_', ' ').toLowerCase() : 'highlight';
+  return gameName ? `${gameName} ${label} @ ${ts}` : `${label} @ ${ts}`;
 }
 
 export async function processVod(vod, { onClip, gameName: passedGameName = null, onDetectorProgress } = {}) {
@@ -116,6 +118,13 @@ export async function processVod(vod, { onClip, gameName: passedGameName = null,
   } catch (err) {
     logger.warn({ err: err?.message, vodId: vod.vodId }, 'pipeline.combatFilterFailed');
   }
+  // Racing games: label candidates with a category (crash, overtake, drift, ...)
+  // instead of filtering — see detectors/racingFilter.js for why this doesn't drop.
+  try {
+    highlights = await categorizeRacingHighlights(highlights, { vod, gameName });
+  } catch (err) {
+    logger.warn({ err: err?.message, vodId: vod.vodId }, 'pipeline.racingFilterFailed');
+  }
   logger.info(
     {
       vodId: vod.vodId,
@@ -142,6 +151,7 @@ export async function processVod(vod, { onClip, gameName: passedGameName = null,
         filePath: null,
         gameName,
         reason: h.reason,
+        category: h.category ?? null,
         viewerClipTitle: h.viewerClipTitle ?? null,
       };
       clips.push(clip);
@@ -268,7 +278,7 @@ export async function runPipeline(eventPayload) {
         rendered += 1;
         let twitchResult = null;
         if (!skipTwitch) {
-          const title = buildClipTitle(clip.gameName, clip.startSec);
+          const title = buildClipTitle(clip.gameName, clip.startSec, clip.category);
           try {
             twitchResult = await publishClip(
               { vodId: vod.vodId, startSec: clip.startSec, endSec: clip.endSec, title },
@@ -296,6 +306,7 @@ export async function runPipeline(eventPayload) {
             score: clip.score,
             gameName: clip.gameName ?? null,
             reason: clip.reason ?? null,
+            category: clip.category ?? null,
             viewerClipTitle: clip.viewerClipTitle ?? null,
             createdAt: clip.createdAt,
             twitchClipUrl: twitchResult?.clipUrl ?? null,
@@ -313,6 +324,7 @@ export async function runPipeline(eventPayload) {
           await reviewBot.sendClipRating({
             clipId: clip.id,
             gameName: clip.gameName,
+            category: clip.category,
             startSec: clip.startSec,
             score: clip.score,
             reason: clip.reason,

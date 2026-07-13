@@ -91,6 +91,40 @@ export const detector = {
       'dragon ball fighterz',
     ],
   },
+  // Racing-category labeler (src/detectors/racingFilter.js). Same local-Ollama
+  // mechanism as combatFilter, but LABELS candidates with a category (crash,
+  // drift, overtake, ...) instead of dropping them — these prompts are
+  // unvalidated against real Forza footage, so this is deliberately
+  // fail-open/non-destructive until there's real footage to tune against.
+  racingFilter: {
+    enabled: true,
+    ollamaHost: 'http://localhost:11434',
+    model: 'gemma3:4b', // same model as combatFilter; re-evaluate once tested on real racing frames
+    framesPerHighlight: 3,
+    frameWidth: 640,
+    frameTimeoutMs: 60 * 1000,
+    ytFormat: 'best[height<=480]/best',
+    racingGameKeywords: [
+      'forza',
+      'gran turismo',
+      'need for speed',
+      'f1 2',
+      'f1 twenty',
+      'dirt rally',
+      'dirt 5',
+      'wrc',
+      'assetto corsa',
+      'iracing',
+      'wreckfest',
+      'project cars',
+      'rfactor',
+      'trackmania',
+      'the crew',
+      'burnout',
+      'mario kart',
+      'beamng',
+    ],
+  },
 };
 
 export const editing = {
