@@ -17,7 +17,8 @@ import { env } from '../lib/env.js';
 import { logger } from '../lib/logger.js';
 import { deleteClip } from '../twitch/vodFetcher.js';
 
-const DISCORD_FREE_ATTACHMENT_LIMIT = 25 * 1024 * 1024;
+// Discord lowered the free-tier per-file cap from 25MB to 10MB in late 2024.
+const DISCORD_FREE_ATTACHMENT_LIMIT = 10 * 1024 * 1024;
 const MANIFEST_FILE = path.resolve('clips', 'highlights-manifest.json');
 const BANNED_RANGES_FILE = path.resolve('state', 'banned-ranges.json');
 
@@ -378,7 +379,7 @@ async function sendPreview(clip) {
   if (size > 0 && size <= DISCORD_FREE_ATTACHMENT_LIMIT) {
     payload.files = [new AttachmentBuilder(clip.filePath)];
   } else {
-    const reason = size === 0 ? 'unreadable' : `${(size / 1024 / 1024).toFixed(1)} MB > 25 MB`;
+    const reason = size === 0 ? 'unreadable' : `${(size / 1024 / 1024).toFixed(1)} MB > 10 MB`;
     logger.warn({ clipId: clip.id, size, filePath: clip.filePath }, 'discord: clip too large to attach');
     payload.content = `clip too large to attach (${reason}): ${clip.filePath}`;
   }
