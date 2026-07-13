@@ -9,6 +9,7 @@ import { mergeHighlightsWithReserve } from './detectors/merge.js';
 import { filterCombatHighlights, extractFrame } from './detectors/combatFilter.js';
 import { categorizeRacingHighlights } from './detectors/racingFilter.js';
 import { categorizeTacticalHighlights } from './detectors/tacticalFilter.js';
+import { categorizeSandboxHighlights } from './detectors/sandboxFilter.js';
 import { resolveStreamUrl } from './lib/streamUrl.js';
 import { detector as detectorCfg } from '../config.js';
 import reviewBot from './discord/reviewBot.js';
@@ -149,6 +150,13 @@ export async function processVod(vod, { onClip, gameName: passedGameName = null,
     highlights = await categorizeTacticalHighlights(highlights, { vod, gameName });
   } catch (err) {
     logger.warn({ err: err?.message, vodId: vod.vodId }, 'pipeline.tacticalFilterFailed');
+  }
+  // Open-world sandbox games: same labeling-not-filtering pass as racing and
+  // tactical — see detectors/sandboxFilter.js for why this never drops.
+  try {
+    highlights = await categorizeSandboxHighlights(highlights, { vod, gameName });
+  } catch (err) {
+    logger.warn({ err: err?.message, vodId: vod.vodId }, 'pipeline.sandboxFilterFailed');
   }
   logger.info(
     {
@@ -348,6 +356,12 @@ export async function replenishClip(vodId) {
       if (categorized) chosen = categorized;
     } catch (err) {
       logger.warn({ err: err?.message, vodId }, 'pipeline.replenish.tacticalFilterFailed');
+    }
+    try {
+      const [categorized] = await categorizeSandboxHighlights([chosen], { vod: pool.vod, gameName: pool.gameName });
+      if (categorized) chosen = categorized;
+    } catch (err) {
+      logger.warn({ err: err?.message, vodId }, 'pipeline.replenish.sandboxFilterFailed');
     }
 
     await saveReservePool(vodId, pool.highlights.length ? pool : null);

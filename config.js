@@ -160,6 +160,42 @@ export const detector = {
       'ghost recon',
     ],
   },
+  // Open-world sandbox labeler (src/detectors/sandboxFilter.js). Same
+  // local-Ollama labeling mechanism as racing/tactical: adds a category
+  // (police chase, explosion, stunt jump, ...) to candidates from sandbox
+  // games (GTA V, Red Dead Redemption 2, ...) without ever dropping them —
+  // prompts are unvalidated against real GTA footage, so this stays
+  // non-destructive until there's footage to tune against. OCR/temporal/
+  // game-state categories (mission-passed banner, wanted stars, heists as an
+  // activity, close calls, multiplayer) are deferred — see sandboxFilter.js
+  // header.
+  sandboxFilter: {
+    enabled: true,
+    ollamaHost: 'http://localhost:11434',
+    model: 'gemma3:4b', // same model as combat/racing/tactical; re-evaluate on real GTA frames
+    framesPerHighlight: 3,
+    frameWidth: 640,
+    frameTimeoutMs: 60 * 1000,
+    ytFormat: 'best[height<=480]/best',
+    // Deliberately open-world *crime/action sandbox* titles (emergent chaos:
+    // chases, carjackings, ragdolls) — NOT open-world RPGs (Skyrim, Witcher,
+    // Zelda) or survival-crafting sandboxes (Minecraft, Valheim), whose key
+    // moments are combat/exploration beats these prompts would mislabel.
+    // Case-insensitive substring match; 'red dead' covers both Redemption 2
+    // and Online, 'grand theft auto' covers Twitch's official V/Online
+    // category names while short 'gta' catches hand-typed names like "GTA 5".
+    sandboxGameKeywords: [
+      'grand theft auto',
+      'gta',
+      'red dead',
+      'saints row',
+      'watch dogs',
+      'just cause',
+      'sleeping dogs',
+      'mafia',
+      'cyberpunk 2077',
+    ],
+  },
 };
 
 export const editing = {
