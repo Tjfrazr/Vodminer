@@ -8,6 +8,7 @@ import { runDetectors } from './detectors/index.js';
 import { mergeHighlightsWithReserve } from './detectors/merge.js';
 import { filterCombatHighlights, extractFrame } from './detectors/combatFilter.js';
 import { categorizeRacingHighlights } from './detectors/racingFilter.js';
+import { categorizeTacticalHighlights } from './detectors/tacticalFilter.js';
 import { resolveStreamUrl } from './lib/streamUrl.js';
 import { detector as detectorCfg } from '../config.js';
 import reviewBot from './discord/reviewBot.js';
@@ -141,6 +142,13 @@ export async function processVod(vod, { onClip, gameName: passedGameName = null,
     highlights = await categorizeRacingHighlights(highlights, { vod, gameName });
   } catch (err) {
     logger.warn({ err: err?.message, vodId: vod.vodId }, 'pipeline.racingFilterFailed');
+  }
+  // Tactical shooters: same labeling-not-filtering pass as racing — see
+  // detectors/tacticalFilter.js for why this never drops.
+  try {
+    highlights = await categorizeTacticalHighlights(highlights, { vod, gameName });
+  } catch (err) {
+    logger.warn({ err: err?.message, vodId: vod.vodId }, 'pipeline.tacticalFilterFailed');
   }
   logger.info(
     {
@@ -334,6 +342,12 @@ export async function replenishClip(vodId) {
       if (categorized) chosen = categorized;
     } catch (err) {
       logger.warn({ err: err?.message, vodId }, 'pipeline.replenish.racingFilterFailed');
+    }
+    try {
+      const [categorized] = await categorizeTacticalHighlights([chosen], { vod: pool.vod, gameName: pool.gameName });
+      if (categorized) chosen = categorized;
+    } catch (err) {
+      logger.warn({ err: err?.message, vodId }, 'pipeline.replenish.tacticalFilterFailed');
     }
 
     await saveReservePool(vodId, pool.highlights.length ? pool : null);

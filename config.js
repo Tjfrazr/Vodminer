@@ -125,6 +125,41 @@ export const detector = {
       'beamng',
     ],
   },
+  // Tactical-shooter labeler (src/detectors/tacticalFilter.js). Same local-Ollama
+  // labeling mechanism as racingFilter: adds a category (breach, firefight,
+  // arrest, ...) to candidates from tactical shooters (Ready or Not, Ground
+  // Branch, ...) without ever dropping them — prompts are unvalidated against
+  // real Ready or Not footage, so this stays non-destructive until there's
+  // footage to tune against. OCR-dependent categories (kill feed, mission-end
+  // banner, objective text) are deferred — see tacticalFilter.js header.
+  tacticalFilter: {
+    enabled: true,
+    ollamaHost: 'http://localhost:11434',
+    model: 'gemma3:4b', // same model as combat/racing; re-evaluate on real tactical frames
+    framesPerHighlight: 3,
+    frameWidth: 640,
+    frameTimeoutMs: 60 * 1000,
+    ytFormat: 'best[height<=480]/best',
+    // Deliberately tactical-shooter-specific (slow, methodical, squad-based
+    // CQB/milsim titles) — NOT generic arena/hero FPS like Call of Duty or
+    // Valorant, which are a different play style with different key moments.
+    // Case-insensitive substring match, so multi-word entries are used where a
+    // short one would false-match unrelated titles ('arma 3' not 'arma', which
+    // would hit "Armada"; no bare 'squad').
+    tacticalGameKeywords: [
+      'ready or not',
+      'swat',
+      'ground branch',
+      'zero hour',
+      'six days in fallujah',
+      'insurgency',
+      'rainbow six',
+      'door kickers',
+      'arma 3',
+      'arma reforger',
+      'ghost recon',
+    ],
+  },
 };
 
 export const editing = {
