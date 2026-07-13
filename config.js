@@ -196,6 +196,47 @@ export const detector = {
       'cyberpunk 2077',
     ],
   },
+  // Sports-game labeler (src/detectors/sportsFilter.js). Same local-Ollama
+  // labeling mechanism as racing/tacticalFilter: adds a category (score
+  // banner, celebration, replay, ...) to candidates from structured-match
+  // sports titles (EA Sports FC, Madden, NBA 2K, ...) without ever dropping
+  // them — prompts are unvalidated against real footage of these games, so
+  // this stays non-destructive until there's footage to tune against.
+  // Context-aware weighting (score differential, game clock, match
+  // importance) and OCR-dependent categories (overtime, records) are
+  // deferred — see sportsFilter.js header for why.
+  sportsFilter: {
+    enabled: true,
+    ollamaHost: 'http://localhost:11434',
+    model: 'gemma3:4b', // same model as combat/racing/tactical; re-evaluate on real sports frames
+    framesPerHighlight: 3,
+    frameWidth: 640,
+    frameTimeoutMs: 60 * 1000,
+    ytFormat: 'best[height<=480]/best',
+    // Structured-match sports titles: clear objectives, scoring, and
+    // broadcast-style presentation (replays, celebrations, score graphics) —
+    // which is exactly what the prompts key on. Rocket League qualifies (goals,
+    // auto-replays, celebrations) even though the "athletes" are cars.
+    // Case-insensitive substring match, so entries are chosen not to
+    // false-match unrelated titles: 'nhl 2' not bare 'nhl' (same pattern as
+    // racing's 'f1 2'), and no 'football manager' — a menu-driven management
+    // sim, not on-pitch gameplay, so these prompts would label nothing.
+    sportsGameKeywords: [
+      'fifa',
+      'ea sports fc',
+      'efootball',
+      'pro evolution soccer',
+      'madden',
+      'college football',
+      'nba 2k',
+      'nba live',
+      'mlb the show',
+      'super mega baseball',
+      'nhl 2',
+      'rocket league',
+      'pga tour',
+    ],
+  },
 };
 
 export const editing = {
