@@ -240,6 +240,15 @@ client.on('interactionCreate', async (interaction) => {
     const clipId = withoutPrefix.slice(0, lastUnderscore);
     const score = Number(withoutPrefix.slice(lastUnderscore + 1));
     const reason = interaction.fields.getTextInputValue('reason').trim() || null;
+    const willDelete = score < LOW_SCORE_THRESHOLD;
+
+    // A low score runs deleteAndReplenish, which can take minutes (Ollama
+    // classification, ffmpeg, a Twitch publish for the replacement clip) —
+    // Discord fails the interaction client-side ("Something went wrong")
+    // if it isn't acknowledged within ~3s, so defer immediately, same
+    // pattern as the disapprove handler below.
+    if (willDelete) await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
     let lowScoreDeleted = false;
     try {
       const raw = await readFile(MANIFEST_FILE, 'utf8');
@@ -249,7 +258,7 @@ client.on('interactionCreate', async (interaction) => {
         clip.rating = score;
         clip.ratingReason = reason;
         clip.ratedAt = new Date().toISOString();
-        if (score < LOW_SCORE_THRESHOLD) {
+        if (willDelete) {
           lowScoreDeleted = true;
           await deleteAndReplenish(manifest, clip, { reason: reason ?? `rated ${score}/10` });
         } else {
@@ -260,14 +269,19 @@ client.on('interactionCreate', async (interaction) => {
     } catch (err) {
       logger.warn({ err: err?.message, clipId }, 'discord: rating save failed');
     }
+
     const ratingLine = reason ? `**Rated ${score}/10** — ${reason}` : `**Rated ${score}/10**`;
-    if (lowScoreDeleted) {
-      await interaction.update({
-        content: `${interaction.message.content}\n${ratingLine}\n**Below ${LOW_SCORE_THRESHOLD}/10 — deleted, replaced from pool** ✓`,
+
+    if (willDelete) {
+      const suffix = lowScoreDeleted ? `\n**Below ${LOW_SCORE_THRESHOLD}/10 — deleted, replaced from pool** ✓` : '';
+      await interaction.message?.edit({
+        content: `${interaction.message.content}\n${ratingLine}${suffix}`,
         components: [],
-      });
+      }).catch((err) => logger.warn({ err: err?.message, clipId }, 'discord: rating message edit failed'));
+      await interaction.deleteReply().catch(() => {});
       return;
     }
+
     const actionRow = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`approve_${clipId}`).setLabel('✅ Approve + TikTok').setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId(`disapprove_${clipId}`).setLabel('❌ Disapprove').setStyle(ButtonStyle.Danger),
